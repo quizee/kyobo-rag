@@ -18,4 +18,7 @@ ENV/
 .vscode/
 .idea/
 *.swp
-*.swo 
+*.swo
+
+# Additional file
+.DS_Store 
