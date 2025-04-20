@@ -261,35 +261,49 @@ class PDFProcessor:
     def process_pdf(self, pdf_path: str) -> None:
         """PDF 파일을 처리합니다."""
         try:
-            with pdfplumber.open(pdf_path) as pdf:
-                total_pages = len(pdf.pages)
-                logger.info(f"총 {total_pages}페이지를 처리합니다.")
+            # PDF 파일명 설정
+            self.pdf_name = Path(pdf_path).stem
 
-                # 테스트 모드일 경우 처음 6장만 처리
-                pages_to_process = 6 if self.test_mode else total_pages
+            # 출력 디렉토리 설정
+            output_dir = Path("data/extracted")
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-                for page_num in range(pages_to_process):
-                    logger.info(f"페이지 {page_num + 1} / {pages_to_process} 처리 중")
-                    page = pdf.pages[page_num]
+            # PDF 파일 열기
+            pdf = pdfplumber.open(pdf_path)
+            total_pages = len(pdf.pages)
+            logger.info(f"총 {total_pages}페이지를 처리합니다.")
 
-                    # 첫 번째 페이지는 전체를 하나의 섹션으로 처리
-                    if page_num == 0:
-                        lines = self.get_page_structure(page)
-                        section = {
-                            "title": "표지",
-                            "start_line": 1,
-                            "end_line": len(lines),
+            # 테스트 모드인 경우 처리할 페이지 수 제한
+            if self.test_mode:
+                total_pages = min(total_pages, 6)
+
+            # 각 페이지 처리
+            for page_num in range(total_pages):
+                logger.info(f"페이지 {page_num + 1} / {total_pages} 처리 중")
+                page = pdf.pages[page_num]
+
+                if page_num == 0:  # 첫 페이지 특별 처리
+                    # 전체 페이지를 하나의 섹션으로 처리
+                    lines = self.get_page_structure(page)
+                    section_info = {
+                        "section_number": 1,
+                        "start_line": 1,
+                        "end_line": len(lines),
+                    }
+                    self.save_first_page_section(page, section_info, output_dir)
+                else:
+                    # 나머지 페이지는 기존 방식대로 처리
+                    sections = self.analyze_page_content(page, page_num + 1)
+                    for section_num, section in enumerate(sections, 1):
+                        section_info = {
+                            "section_number": section_num,
+                            "start_line": section["start_line"],
+                            "end_line": section["end_line"],
                         }
-                        self.save_section(page, section, page_num + 1, 1, pdf_path)
-                        logger.info(f"Saved first page as a single section")
-                    else:
-                        # 나머지 페이지는 GPT로 분석
-                        sections = self.analyze_page_content(page, page_num + 1)
-                        for i, section in enumerate(sections, 1):
-                            self.save_section(page, section, page_num + 1, i, pdf_path)
-                            logger.info(f"Saved section {i} from page {page_num + 1}")
+                        self.save_section(page, section_info, output_dir)
 
-                    logger.info(f"{page_num + 1}")
+            pdf.close()
+            logger.info(f"파일 처리 완료: {pdf_path}")
 
         except Exception as e:
             logger.error(f"PDF 처리 중 오류 발생: {e}")
@@ -315,44 +329,201 @@ class PDFProcessor:
             self.process_pdf(str(pdf_path))
             logger.info(f"파일 처리 완료: {pdf_path}")
 
-    def save_section(
-        self, page, section: Dict, page_num: int, section_num: int, pdf_path: str
-    ) -> None:
-        """섹션을 저장합니다."""
+    def analyze_section_content(self, text: str) -> dict:
+        """섹션의 내용을 분석하여 제목과 본문으로 구분합니다."""
         try:
-            # PyMuPDF 페이지 객체로 변환
-            doc = fitz.open()
-            doc.insert_pdf(
-                fitz.open(pdf_path), from_page=page_num - 1, to_page=page_num - 1
+            response = self.client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """
+PDF 문서의 섹션을 분석하여 상세하고 맥락이 있는 제목과 본문으로 구분하십시오.
+
+제목은 다음 기준을 따라야 합니다:
+1. 문서의 전체 맥락을 반영해야 함
+   - 어떤 보험 상품인지 (예: 치아보장보험)
+   - 어떤 세부 항목인지 (예: 가입 1형, 2형 등)
+   - 어떤 내용을 다루는지 (예: 보장 내용, 지급 기준 등)
+
+2. 검색 가능성을 고려한 구체성
+   - 사용자가 찾고자 하는 정보를 정확히 파악할 수 있도록
+   - 보험 용어나 주요 키워드를 포함
+   - 금액, 기간, 조건 등 중요 정보가 있다면 포함
+
+3. 계층 구조 반영
+   - 상위 카테고리에서 하위 카테고리로 이어지는 구조
+   - 예: "치아보장보험의 가입 1형 보장 안내 및 지급 내용"
+   - 예: "무배당 교보치아보험 갱신형 상품의 만기환급금 지급 기준"
+
+4. 명확성과 완결성
+   - 해당 섹션의 모든 중요 요소를 포함
+   - 다른 섹션과 구별되는 특징을 반영
+   - 검색과 참조가 용이하도록 구체적으로 작성
+
+잘못된 예:
+- "보장 안내" (너무 단순함)
+- "지급 기준" (맥락이 없음)
+- "보험 약관" (구체성이 부족함)
+
+올바른 예:
+- "치아보장보험의 가입 1형 보장 안내 및 지급 내용"
+- "무배당 교보치아보험 갱신형의 임플란트 치료 보장 기준 및 한도"
+- "치아보장보험 15년 만기 갱신형 상품의 보험료 납입 면제 조건"
+
+응답은 다음 형식이어야 합니다:
+{
+    "title": "상세하고 맥락이 있는 제목",
+    "text": "섹션의 전체 내용"
+}""",
+                    },
+                    {"role": "user", "content": text},
+                ],
+                temperature=0,
             )
-            mupdf_page = doc[0]
+
+            result = json.loads(response.choices[0].message.content)
+            return result
+        except Exception as e:
+            logger.error(f"섹션 내용 분석 중 오류 발생: {e}")
+            # 분석 실패 시 기본값 반환
+            return {"title": "제목 추출 실패", "text": text}
+
+    def save_section(self, page, section_info: dict, output_dir: Path):
+        """섹션을 이미지와 메타데이터로 저장합니다."""
+        try:
+            # 섹션 번호와 페이지 번호로 파일명 생성
+            base_filename = f"{self.pdf_name}_p{page.page_number}_section_{section_info['section_number']}"
+
+            # 이미지 저장
+            image_dir = output_dir / "images"
+            image_dir.mkdir(exist_ok=True)
+            image_path = image_dir / f"{base_filename}.png"
 
             # 섹션의 bbox 찾기
             bbox = self.find_region_bbox(
-                page, section["start_line"], section["end_line"]
+                page, section_info["start_line"], section_info["end_line"]
             )
-            if bbox:
-                # 이미지 캡처 및 저장
-                img = self.capture_region(mupdf_page, bbox)
-                if img:
-                    # 파일명 생성
-                    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-                    section_name = f"{base_name}_p{page_num}_section_{section_num}"
+            if not bbox:
+                logger.warning(f"섹션의 bbox를 찾을 수 없습니다: {section_info}")
+                return
 
-                    # 이미지 저장
-                    img_path = self.image_output_dir / f"{section_name}.png"
-                    img.save(str(img_path))
+            # PyMuPDF 문서 생성
+            pdf_path = page.pdf.stream.name
+            doc = fitz.open(pdf_path)
+            mupdf_page = doc[page.page_number]
 
-                    # 메타데이터 저장
-                    section["image_path"] = str(img_path)
-                    section["bbox"] = bbox
-                    metadata_path = self.text_output_dir / f"{section_name}.json"
-                    with open(metadata_path, "w", encoding="utf-8") as f:
-                        json.dump(section, f, ensure_ascii=False, indent=2)
+            # 이미지 캡처 및 저장
+            image = self.capture_region(mupdf_page, bbox)
+            if image:
+                image.save(str(image_path))
+                logger.info(f"이미지 저장됨: {image_path}")
 
+            # PyMuPDF 문서 닫기
             doc.close()
+
+            # 섹션 텍스트 추출
+            section_text = self.extract_section_text(
+                page, section_info["start_line"], section_info["end_line"]
+            )
+
+            # GPT를 사용하여 제목과 본문 분석
+            content_analysis = self.analyze_section_content(section_text)
+
+            # 메타데이터 JSON 생성
+            metadata = {
+                "title": content_analysis["title"],
+                "text": content_analysis["text"],
+                "start_line": section_info["start_line"],
+                "end_line": section_info["end_line"],
+                "image_path": str(image_path),
+                "bbox": bbox,
+            }
+
+            # 메타데이터 JSON 저장
+            text_dir = output_dir / "text"
+            text_dir.mkdir(exist_ok=True)
+            json_path = text_dir / f"{base_filename}.json"
+
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"메타데이터 저장됨: {json_path}")
+
         except Exception as e:
             logger.error(f"섹션 저장 중 오류 발생: {e}")
+            raise
+
+    def extract_section_text(self, page, start_line: int, end_line: int) -> str:
+        """페이지에서 특정 라인 범위의 텍스트를 추출합니다."""
+        try:
+            lines = page.extract_text().split("\n")
+            section_lines = lines[start_line - 1 : end_line]
+            return "\n".join(section_lines)
+        except Exception as e:
+            logger.error(f"텍스트 추출 중 오류 발생: {e}")
+            return ""
+
+    def save_first_page_section(self, page, section_info: dict, output_dir: Path):
+        """첫 페이지의 섹션을 저장합니다."""
+        try:
+            # 섹션 번호와 페이지 번호로 파일명 생성
+            base_filename = f"{self.pdf_name}_p{page.page_number}_section_{section_info['section_number']}"
+
+            # 이미지 저장
+            image_dir = output_dir / "images"
+            image_dir.mkdir(exist_ok=True)
+            image_path = image_dir / f"{base_filename}.png"
+
+            # 섹션의 bbox 찾기
+            bbox = self.find_region_bbox(
+                page, section_info["start_line"], section_info["end_line"]
+            )
+            if not bbox:
+                logger.warning(f"섹션의 bbox를 찾을 수 없습니다: {section_info}")
+                return
+
+            # PyMuPDF 문서 생성
+            pdf_path = page.pdf.stream.name
+            doc = fitz.open(pdf_path)
+            mupdf_page = doc[page.page_number]
+
+            # 이미지 캡처 및 저장
+            image = self.capture_region(mupdf_page, bbox)
+            if image:
+                image.save(str(image_path))
+                logger.info(f"이미지 저장됨: {image_path}")
+
+            # PyMuPDF 문서 닫기
+            doc.close()
+
+            # 섹션 텍스트 추출
+            section_text = self.extract_section_text(
+                page, section_info["start_line"], section_info["end_line"]
+            )
+
+            # 메타데이터 JSON 생성 (첫 페이지는 파일명을 제목으로 사용)
+            metadata = {
+                "title": self.pdf_name,  # PDF 파일명을 제목으로 사용
+                "text": section_text,  # 전체 텍스트를 그대로 사용
+                "start_line": section_info["start_line"],
+                "end_line": section_info["end_line"],
+                "image_path": str(image_path),
+                "bbox": bbox,
+            }
+
+            # 메타데이터 JSON 저장
+            text_dir = output_dir / "text"
+            text_dir.mkdir(exist_ok=True)
+            json_path = text_dir / f"{base_filename}.json"
+
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"메타데이터 저장됨: {json_path}")
+
+        except Exception as e:
+            logger.error(f"첫 페이지 섹션 저장 중 오류 발생: {e}")
             raise
 
 
