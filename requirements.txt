@@ -1,6 +1,9 @@
-PyMuPDF==1.23.8
+PyMuPDF>=1.23.0
 pdfplumber==0.10.3
-Pillow==10.2.0
+Pillow>=10.0.0
 python-pptx==0.6.23
-openai==1.12.0
-streamlit==1.31.1 
+openai>=1.0.0
+streamlit==1.31.1
+python-dotenv>=1.0.0
+numpy>=1.24.0
+tiktoken>=0.5.0 
