@@ -1,6 +1,10 @@
 # Data directory
 data/
 
+# Output directories
+output/
+test_output/
+
 # Python
 __pycache__/
 *.py[cod]
