@@ -405,35 +405,35 @@ def add_center_image(slide, header_info, prs):
             img_width, img_height = im.size
             slide_width = prs.slide_width
             slide_height = prs.slide_height
-            
+
             # 슬라이드의 40%를 이미지 최대 높이로 설정
             max_height = slide_height * 0.4
-            
+
             # 이미지 비율 유지하면서 크기 조정
             img_ratio = img_width / img_height
-            
+
             # 높이 기준으로 크기 계산
             height = max_height
             width = height * img_ratio
-            
+
             # 너비가 슬라이드 너비의 85%를 넘으면 너비 기준으로 다시 계산
             if width > slide_width * 0.85:
                 width = slide_width * 0.85
                 height = width / img_ratio
-            
+
             # kyobo_layout2 이미지 아래, 출처 텍스트 위에 위치하도록 설정
             # kyobo_layout2는 상단에서 Inches(1.2)에 위치
             # 출처 텍스트는 하단에서 Inches(1.2)에 위치
             layout_margin_top = Inches(1.2)  # kyobo_layout2의 상단 여백
             source_margin_bottom = Inches(1.2)  # 출처 텍스트의 하단 여백
-            
+
             # 이미지를 kyobo_layout2와 출처 텍스트 사이의 중앙에 배치
             available_height = slide_height - layout_margin_top - source_margin_bottom
             top = layout_margin_top + (available_height - height) / 2
-            
+
             # 가로 중앙 정렬
             left = (slide_width - width) / 2
-            
+
             slide.shapes.add_picture(img_path, left, top, width, height)
 
 
@@ -446,11 +446,11 @@ def add_layout_image(slide, prs):
             # 슬라이드 너비의 95%로 이미지 크기 조정
             width = prs.slide_width * 0.95
             height = (img_height / img_width) * width
-            
+
             # 이미지를 가로 중앙에 배치하고, 제목 아래에 위치시킴
             left = (prs.slide_width - width) / 2
             top = Inches(1.2)  # 제목 아래 위치
-            
+
             slide.shapes.add_picture(layout_path, left, top, width, height)
 
 
@@ -463,21 +463,23 @@ def add_muscle_image(slide, prs):
         height_cm = 0.97
         width = int(width_cm * 360000)
         height = int(height_cm * 360000)
-        
+
         # 정확한 위치 지정 (가로 20.71cm, 세로 17.57cm)
         left = int(20.71 * 360000)  # 가로 위치
-        top = int(17.57 * 360000)   # 세로 위치
-        
+        top = int(17.57 * 360000)  # 세로 위치
+
         slide.shapes.add_picture(muscle_path, left, top, width, height)
 
 
-def create_ppt_from_header_dict(header_dict, output_pptx, pdf_name="PDF_파일명"):
+def create_ppt_from_header_dict(
+    header_list, output_pptx, pdf_name="교보마이플랜건강보험[2409](무배당)"
+):
     prs = Presentation()
     blank_slide_layout = prs.slide_layouts[6]
 
     # 첫 번째 슬라이드에 표지 추가
     cover_slide = prs.slides.add_slide(blank_slide_layout)
-    
+
     # kyobo_layout2 이미지 추가
     layout_path = os.path.join("temp_output", "kyobo_layout2.jpg")
     if os.path.exists(layout_path):
@@ -485,55 +487,62 @@ def create_ppt_from_header_dict(header_dict, output_pptx, pdf_name="PDF_파일�
             img_width, img_height = im.size
             slide_width = prs.slide_width
             slide_height = prs.slide_height
-            
+
             # 가로가 슬라이드에 꽉 차도록 비율 계산
             width = slide_width
             height = (img_height / img_width) * width
-            
+
             # 세로가 슬라이드보다 크면 세로 기준으로 다시 계산
             if height > slide_height:
                 height = slide_height
                 width = (img_width / img_height) * height
-            
+
             # 이미지를 중앙에 배치
             left = int((slide_width - width) / 2)
             top = int((slide_height - height) / 2)
-            cover_slide.shapes.add_picture(layout_path, left, top, int(width), int(height))
-    
+            cover_slide.shapes.add_picture(
+                layout_path, left, top, int(width), int(height)
+            )
+
     # PDF 이름과 날짜 텍스트 추가
     from datetime import datetime
+
     today = datetime.now().strftime("%Y년 %m월 %d일")
-    
+
     # cm를 EMU(English Metric Units)로 변환하는 함수
     def cm_to_emu(cm):
         return int(cm * 360000)  # 1cm = 360000 EMU
-    
+
     # PDF 이름 텍스트 박스
     pdf_text_left = cm_to_emu(0.76)  # 0.76cm
-    pdf_text_top = cm_to_emu(7.7)    # 7.7cm
+    pdf_text_top = cm_to_emu(7.7)  # 7.7cm
     pdf_text_width = prs.slide_width - cm_to_emu(1.52)  # 전체 너비에서 여백 고려
-    pdf_text_height = cm_to_emu(1)    # 적절한 높이
-    
-    pdf_text_box = cover_slide.shapes.add_textbox(pdf_text_left, pdf_text_top, pdf_text_width, pdf_text_height)
+    pdf_text_height = cm_to_emu(1)  # 적절한 높이
+
+    pdf_text_box = cover_slide.shapes.add_textbox(
+        pdf_text_left, pdf_text_top, pdf_text_width, pdf_text_height
+    )
     pdf_text_tf = pdf_text_box.text_frame
     pdf_text_tf.word_wrap = True
-    
+
     p_pdf = pdf_text_tf.paragraphs[0]
     p_pdf.text = f'현재 PDF이름: "{pdf_name}"'
     p_pdf.font.size = Pt(16)  # 16pt
     p_pdf.font.color.rgb = RGBColor(150, 150, 150)
     p_pdf.alignment = PP_ALIGN.CENTER  # 가운데 정렬로 변경
-    
+
     # 날짜 텍스트 박스
-    date_text_left = cm_to_emu(0.76)   # 0.76cm
-    date_text_top = cm_to_emu(9.53)    # 9.53cm
+    date_text_left = cm_to_emu(0.76)  # 0.76cm
+    date_text_top = cm_to_emu(9.53)  # 9.53cm
     date_text_width = prs.slide_width - cm_to_emu(1.52)  # 전체 너비에서 여백 고려
-    date_text_height = cm_to_emu(1)     # 적절한 높이
-    
-    date_text_box = cover_slide.shapes.add_textbox(date_text_left, date_text_top, date_text_width, date_text_height)
+    date_text_height = cm_to_emu(1)  # 적절한 높이
+
+    date_text_box = cover_slide.shapes.add_textbox(
+        date_text_left, date_text_top, date_text_width, date_text_height
+    )
     date_text_tf = date_text_box.text_frame
     date_text_tf.word_wrap = True
-    
+
     p_date = date_text_tf.paragraphs[0]
     p_date.text = today
     p_date.font.size = Pt(14)  # 14pt
@@ -542,32 +551,26 @@ def create_ppt_from_header_dict(header_dict, output_pptx, pdf_name="PDF_파일�
 
     # 나머지 슬라이드 생성
     slide_count = 1  # 슬라이드 카운터 추가
-    for key, header_info in header_dict.items():
+    for header_info in header_list:
         # Header 1 레벨의 헤더는 건너뛰기
         if header_info.get("level") == 1:
             continue
-            
+
         slide = prs.slides.add_slide(blank_slide_layout)
         slide_count += 1
 
         # 1. 헤더 경로 추가
         add_header_path(slide, header_info, prs)
-        
         # 2. 제목 텍스트 추가
         add_title_text(slide, header_info, prs)
-
         # 3. 2번 슬라이드부터 레이아웃 이미지 추가
         if slide_count > 1:
             add_layout_image(slide, prs)
-            # kyobo_muscle.jpg 이미지 추가
             add_muscle_image(slide, prs)
-        
         # 4. 중앙에 이미지 추가
         add_center_image(slide, header_info, prs)
-        
         # 5. 출처 텍스트 추가
         add_source_text(slide, header_info, prs, pdf_name)
-        
         # 6. AI 고지 문구 추가
         add_ai_notice_text(slide, prs)
 
@@ -690,7 +693,9 @@ with col_chat:
             pptx_path = os.path.join("temp_output", "search_results.pptx")
 
             if selected_headers:
-                create_ppt_from_header_dict(selected_headers, pptx_path, uploaded_file.name)
+                create_ppt_from_header_dict(
+                    selected_headers, pptx_path, uploaded_file.name
+                )
                 st.session_state["search_pptx_path"] = pptx_path
             else:
                 st.session_state["search_pptx_path"] = None
