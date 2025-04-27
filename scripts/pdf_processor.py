@@ -29,7 +29,7 @@ class PDFProcessor:
         self.client = OpenAI()
         self.test_mode = test_mode
         self.test_page_limit = test_page_limit
-        self.model = "gpt-4.1-mini"
+        self.model = "4.1-gpt-mini"
         self.product_info = None
         self.logger = logging.getLogger(__name__)
         self.pdf_path = None

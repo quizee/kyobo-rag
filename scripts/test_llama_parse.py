@@ -8,6 +8,7 @@ import re
 from pdf2image import convert_from_path
 from PIL import Image
 import tempfile
+import pytesseract
 
 # .env 파일에서 API 키 로드
 load_dotenv()
@@ -55,50 +56,249 @@ def extract_headers_from_markdown(markdown_text: str) -> List[Dict[str, str]]:
 
 
 def normalize_text(text: str) -> str:
-    """텍스트 정규화: 공백 제거 및 소문자 변환"""
-    return re.sub(r"\s+", "", text.lower())
+    """텍스트 정규화: 공백 제거"""
+    # 한글, 영문, 숫자만 남기고 모두 제거
+    normalized = "".join(char for char in text if char.isalnum() or char.isspace())
+    # 연속된 공백을 하나로 치환
+    normalized = " ".join(normalized.split())
+    # 모든 공백 제거
+    normalized = "".join(normalized.split())
+    return normalized
 
 
-def texts_are_similar(text1: str, text2: str) -> bool:
-    """두 텍스트가 유사한지 확인"""
-    norm1 = normalize_text(text1)
-    norm2 = normalize_text(text2)
+def calculate_similarity(text1, text2):
+    # 1. 연속 문자열 매칭 (70% 비중)
+    longest_substring = find_longest_common_substring(text1, text2)
+    substring_ratio = len(longest_substring) / max(len(text1), len(text2))
 
-    # 정확히 일치
-    if norm1 == norm2:
-        return True
+    # 2. 문자 기반 Jaccard 유사도 (30% 비중)
+    chars1 = set(text1)
+    chars2 = set(text2)
+    jaccard = len(chars1 & chars2) / len(chars1 | chars2)
 
-    # 한쪽이 다른쪽을 포함
-    if norm1 in norm2 or norm2 in norm1:
-        return True
+    # 가중치 적용 (연속 문자열 매칭에 더 높은 가중치)
+    similarity = (0.7 * substring_ratio) + (0.3 * jaccard)
 
-    return False
+    return similarity, longest_substring
 
 
-def find_matching_layout_element(page: Any, header_text: str) -> Dict[str, Any]:
-    """페이지 내에서 헤더 텍스트와 일치하는 레이아웃 요소 찾기"""
-    if not hasattr(page, "images"):
-        return None
+def find_longest_common_substring(s1, s2):
+    # 두 문자열에서 가장 긴 공통 부분 문자열 찾기
+    m = [[0] * (1 + len(s2)) for _ in range(1 + len(s1))]
+    longest, x_longest = 0, 0
 
-    # 레이아웃 요소들을 y 좌표 순으로 정렬
-    layout_elements = sorted(
-        [img for img in page.images if hasattr(img, "text") and img.text.strip()],
-        key=lambda x: x.y,
+    for x in range(1, 1 + len(s1)):
+        for y in range(1, 1 + len(s2)):
+            if s1[x - 1] == s2[y - 1]:
+                m[x][y] = m[x - 1][y - 1] + 1
+                if m[x][y] > longest:
+                    longest = m[x][y]
+                    x_longest = x
+
+    return s1[x_longest - longest : x_longest]
+
+
+def group_texts_by_line(texts, y_threshold=5):
+    """같은 y좌표(±threshold)에 있는 텍스트들을 하나의 라인으로 그룹화"""
+    if not texts:
+        return []
+
+    # y좌표를 기준으로 정렬
+    sorted_texts = sorted(texts, key=lambda x: x["y"])
+
+    lines = []
+    current_line = [sorted_texts[0]]
+    current_y = sorted_texts[0]["y"]
+
+    for text in sorted_texts[1:]:
+        if abs(text["y"] - current_y) <= y_threshold:
+            current_line.append(text)
+        else:
+            # x좌표로 정렬하여 라인의 텍스트들을 순서대로 결합
+            sorted_line = sorted(current_line, key=lambda x: x["x"])
+            line_text = " ".join(t["text"] for t in sorted_line)
+            line_y = sum(t["y"] for t in current_line) / len(current_line)
+            lines.append(
+                {
+                    "text": line_text,
+                    "y": line_y,
+                    "confidence": sum(t["confidence"] for t in current_line)
+                    / len(current_line),
+                }
+            )
+            current_line = [text]
+            current_y = text["y"]
+
+    # 마지막 라인 처리
+    if current_line:
+        sorted_line = sorted(current_line, key=lambda x: x["x"])
+        line_text = " ".join(t["text"] for t in sorted_line)
+        line_y = sum(t["y"] for t in current_line) / len(current_line)
+        lines.append(
+            {
+                "text": line_text,
+                "y": line_y,
+                "confidence": sum(t["confidence"] for t in current_line)
+                / len(current_line),
+            }
+        )
+
+    return lines
+
+
+def find_text_positions(image):
+    """이미지에서 텍스트 위치 찾기"""
+    # OCR 설정 변경
+    custom_config = r"--oem 3 --psm 3 -l kor+eng --dpi 300"
+
+    # OCR 실행
+    data = pytesseract.image_to_data(
+        image, config=custom_config, output_type=pytesseract.Output.DICT
     )
 
-    # 각 요소와 비교
-    for elem in layout_elements:
-        if texts_are_similar(elem.text, header_text):
-            return {
-                "y": elem.y,
-                "x": elem.x,
-                "width": elem.width,
-                "height": elem.height,
-                "type": getattr(elem, "type", "unknown"),
-                "text": elem.text,
-            }
+    # 텍스트 정보 추출 (신뢰도 임계값 조정)
+    texts = []
+    for i in range(len(data["text"])):
+        if int(data["conf"][i]) > 60:  # 신뢰도 임계값 하향
+            text = data["text"][i].strip()
+            if text:  # 빈 문자열이 아닌 경우만 포함
+                # print(f"텍스트: {text}")
+                # print(f"  위치: x={data['left'][i]}, y={data['top'][i]}, w={data['width'][i]}, h={data['height'][i]}")
+                # print(f"  신뢰도: {int(data['conf'][i])}")
+                texts.append(
+                    {
+                        "text": text,
+                        "x": data["left"][i],
+                        "y": data["top"][i],
+                        "width": data["width"][i],
+                        "height": data["height"][i],
+                        "confidence": int(data["conf"][i]),
+                    }
+                )
 
-    return None
+    # 텍스트를 라인별로 그룹화 (y좌표 기준 병합 범위 확대)
+    lines = group_texts_by_line(texts, y_threshold=15)  # 임계값 증가
+
+    # print("\n그룹화된 라인:")
+    # for line in lines:
+    #     print(f"라인: {line['text']}")
+    #     print(f"  y좌표: {line['y']}")
+    #     print(f"  평균 신뢰도: {line['confidence']:.1f}")
+
+    return lines
+
+
+def find_matching_position(header_text, text_areas):
+    normalized_header = normalize_text(header_text)
+    best_match = None
+    best_similarity = 0
+    best_substring = ""
+
+    for text_area in text_areas:
+        normalized_text = normalize_text(text_area["text"])
+        similarity, longest_substring = calculate_similarity(
+            normalized_header, normalized_text
+        )
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_match = text_area
+            best_substring = longest_substring
+
+    # 매칭 대상 헤더와 best match만 출력
+    if best_match:
+        print(
+            f"[매칭] 헤더: '{header_text}' | OCR: '{best_match['text']}' | 유사도: {best_similarity:.3f} | y: {best_match['y']}"
+        )
+    else:
+        print(f"[매칭] 헤더: '{header_text}' | OCR: (매칭 실패)")
+
+    return best_match, best_similarity
+
+
+def correct_header_positions_with_fixed_first(headers, image, image_height, pdf_height):
+    """헤더 위치 보정 (첫 번째 헤더는 y=0으로 고정)"""
+    # 이미지에서 텍스트 위치 찾기
+    lines = find_text_positions(image)
+
+    corrected_positions = []
+
+    # 첫 번째 헤더는 y=0으로 고정
+    first_header = headers[0]
+    corrected_positions.append(
+        {
+            "page": first_header["page"],
+            "header_level": first_header["header_level"],
+            "header_text": first_header["header_text"],
+            "y": 0,
+            "x": first_header["x"],
+            "width": first_header["width"],
+            "height": first_header["height"],
+            "items": first_header["items"],
+        }
+    )
+
+    # 나머지 헤더들의 위치 보정
+    for header in headers[1:]:
+        # 헤더 텍스트와 가장 잘 매칭되는 위치 찾기
+        best_match, best_similarity = find_matching_position(
+            header["header_text"], lines
+        )
+
+        if best_match is not None:
+            # 이미지 좌표를 PDF 좌표로 변환
+            pdf_y = (best_match["y"] / image_height) * pdf_height
+            corrected_positions.append(
+                {
+                    "page": header["page"],
+                    "header_level": header["header_level"],
+                    "header_text": header["header_text"],
+                    "y": pdf_y,
+                    "x": header["x"],
+                    "width": header["width"],
+                    "height": header["height"],
+                    "items": header["items"],
+                }
+            )
+
+    return corrected_positions
+
+
+def crop_pdf_sections(page_image, headers, output_dir, page_num, pdf_height):
+    """한 페이지의 섹션별 이미지를 OCR 기반으로 추출"""
+    img_width, img_height = page_image.size
+
+    # 헤더 y좌표 보정 (OCR)
+    corrected_sections = correct_header_positions_with_fixed_first(
+        headers, page_image, img_height, pdf_height
+    )
+
+    # 시작 y ~ 다음 헤더 y, 마지막은 페이지 끝까지
+    for i, section in enumerate(corrected_sections):
+        scale_factor = img_height / pdf_height
+        y_start = int(section["y"] * scale_factor)
+        if i < len(corrected_sections) - 1:
+            y_end = int(corrected_sections[i + 1]["y"] * scale_factor)
+        else:
+            y_end = img_height
+
+        if y_start < 0:
+            y_start = 0
+        if y_end > img_height:
+            y_end = img_height
+        if y_end <= y_start:
+            print(f"섹션 좌표 오류 - 시작: {y_start}, 끝: {y_end}, 높이: {img_height}")
+            continue
+
+        # 파일명 생성
+        title = (
+            section["header_text"].replace(" ", "-").replace("?", "").replace("/", "-")
+        )
+        image_path = os.path.join(output_dir, f"page{page_num}_{title}.png")
+
+        # 이미지 저장
+        section_image = page_image.crop((0, y_start, img_width, y_end))
+        section_image.save(image_path, "PNG")
+        print(f"섹션 이미지 저장됨: {image_path} (y: {y_start}-{y_end})")
 
 
 def extract_section_coordinates(pages: List[Any]) -> List[Dict[str, Any]]:
@@ -150,195 +350,101 @@ def extract_section_coordinates(pages: List[Any]) -> List[Dict[str, Any]]:
     return sections
 
 
-def crop_pdf_sections(result, sections, output_dir):
-    """PDF 페이지 스크린샷을 저장하고 섹션별로 자릅니다."""
-    print("\n페이지 스크린샷 저장 중...")
-
-    # PIL의 이미지 크기 제한 늘리기
-    Image.MAX_IMAGE_PIXELS = None
-
-    # 페이지별 스크린샷 이미지와 높이 정보 저장
-    page_images = {}
-    page_heights = {}
-    for page_num, page in enumerate(result.pages, 1):
-        # 전체 페이지 스크린샷 찾기
-        full_page_screenshots = [
-            img
-            for img in page.images
-            if getattr(img, "type", None) == "full_page_screenshot"
-        ]
-
-        if not full_page_screenshots:
-            print(f"페이지 {page_num}의 스크린샷을 찾을 수 없습니다.")
-            continue
-
-        # 스크린샷 저장
-        screenshot = full_page_screenshots[0]
-        try:
-            image_path = result.save_image(screenshot.name, str(output_dir))
-            page_images[page_num] = Image.open(image_path)
-            page_heights[page_num] = screenshot.height  # PDF 좌표계의 높이 저장
-            print(f"페이지 {page_num} 스크린샷 저장됨: {image_path}")
-        except Exception as e:
-            print(f"페이지 {page_num} 스크린샷 저장 중 오류 발생: {str(e)}")
-            continue
-
-    print("\n섹션별 이미지 추출 중...")
-    # 페이지별로 섹션 그룹화
-    page_sections = {}
-    for section in sections:
-        page_num = section["page"]
-        if page_num not in page_sections:
-            page_sections[page_num] = []
-        page_sections[page_num].append(section)
-
-    # 각 페이지의 섹션을 y 좌표 순으로 정렬하고 처리
-    for page_num, page_sections_list in page_sections.items():
-        if page_num not in page_images:
-            continue
-
-        # y 좌표 순으로 정렬
-        page_sections_list.sort(key=lambda x: x["y"])
-        page_image = page_images[page_num]
-        img_width, img_height = page_image.size
-        pdf_height = page_heights[page_num]  # PDF 좌표계의 높이
-
-        # 원본 이미지의 높이와 PDF 좌표 사이의 비율 계산
-        scale_factor = img_height / pdf_height
-
-        # 각 섹션 처리
-        for section in page_sections_list:
-            # PDF 좌표를 이미지 픽셀 좌표로 변환
-            y_start = int(section["y"] * scale_factor)
-            section_height = int(section["height"] * scale_factor)
-            y_end = y_start + section_height
-
-            # 좌표 유효성 검사
-            if y_start < 0:
-                y_start = 0
-            if y_end > img_height:
-                y_end = img_height
-            if y_end <= y_start:
-                print(
-                    f"섹션 좌표 오류 - 시작: {y_start}, 끝: {y_end}, 높이: {img_height}"
-                )
-                continue
-
-            try:
-                # 섹션 이미지 추출
-                section_image = page_image.crop((0, y_start, img_width, y_end))
-
-                # 파일명 생성
-                title = (
-                    section["header_text"]
-                    .replace(" ", "-")
-                    .replace("?", "")
-                    .replace("/", "-")
-                )
-                image_path = os.path.join(output_dir, f"page{page_num}_{title}.png")
-
-                # 이미지 저장
-                section_image.save(image_path, "PNG")
-                print(f"섹션 이미지 저장됨: {image_path} (y: {y_start}-{y_end})")
-            except Exception as e:
-                print(f"섹션 이미지 저장 중 오류 발생: {str(e)}")
-                continue
-
-
 def test_parse():
-    """PDF 파싱 테스트"""
     pdf_path = Path(
         "/Users/jeeyoonlee/Desktop/kyobo-project/data/상품설명/1.교보마이플랜건강보험 [2409](무배당).pdf"
     )
     output_dir = Path("test_output")
     output_dir.mkdir(exist_ok=True)
 
-    print(f"파일: {pdf_path}")
+    parser = LlamaParse(
+        api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
+        num_workers=1,
+        verbose=True,
+        language="ko",
+        extract_layout=True,
+        premium_mode=True,
+        continuous_mode=False,
+        extract_charts=True,
+        save_images=True,
+        output_tables_as_HTML=False,
+        max_pages=6,
+    )
 
-    try:
-        parser = LlamaParse(
-            api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
-            num_workers=1,
-            verbose=True,
-            language="ko",
-            extract_layout=True,
-            take_screenshot=True,
-            premium_mode=True,
-            continuous_mode=False,
-            extract_charts=True,
-            save_images=True,
-            output_tables_as_HTML=False,
-            max_pages=6,  # 테스트를 위해 6페이지로 제한
+    print("PDF 파싱 시작...")
+    result = parser.parse(str(pdf_path))
+    print("파싱 완료!")
+
+    # 1. llama_parse result를 serialize_layout로 JSON 저장
+    raw_json_path = output_dir / "llama_parse_raw.json"
+    with open(raw_json_path, "w", encoding="utf-8") as f:
+        json.dump(serialize_layout(result), f, ensure_ascii=False, indent=2)
+    print(f"llama_parse 원본 JSON 저장: {raw_json_path}")
+
+    # 2. 페이지별 보정된 y좌표를 저장할 dict
+    page_corrections = {}
+
+    for page_num, page in enumerate(result.pages, 1):
+        if not hasattr(page, "items") or not page.items:
+            continue
+
+        print(f"\n=== {page_num}페이지 분석 ===")
+        items = page.items
+        headers = [
+            {
+                "page": page_num,
+                "header_level": item.lvl,
+                "header_text": item.value,
+                "y": item.bBox.y,
+                "x": item.bBox.x,
+                "width": item.bBox.w,
+                "height": item.bBox.h,
+                "items": [],
+            }
+            for item in items
+            if item.type == "heading"
+        ]
+        if not headers:
+            print("헤더 없음")
+            continue
+
+        # 페이지 전체 이미지
+        full_page_screenshots = [
+            img
+            for img in page.images
+            if getattr(img, "type", None) == "full_page_screenshot"
+        ]
+        if not full_page_screenshots:
+            print("페이지 스크린샷 없음")
+            continue
+        page_image = Image.open(
+            result.save_image(full_page_screenshots[0].name, str(output_dir))
         )
+        pdf_height = full_page_screenshots[0].height
 
-        print("PDF 파싱 시작...")
-        result = parser.parse(str(pdf_path))
-        print("파싱 완료!")
+        # 보정된 섹션 리스트 저장
+        corrected_sections = correct_header_positions_with_fixed_first(
+            headers, page_image, page_image.height, pdf_height
+        )
+        page_corrections[page_num] = corrected_sections
 
-        # 3페이지 분석
-        print("\n=== 3페이지 분석 ===")
-        page3 = result.pages[2]
+        crop_pdf_sections(page_image, headers, output_dir, page_num, pdf_height)
 
-        if hasattr(page3, "items"):
-            items = page3.items
-            print(f"\n총 {len(items)}개의 항목 발견")
+    # 3. 보정된 y좌표를 llama_parse JSON에 반영하여 새 파일로 저장
+    corrected_json_path = output_dir / "llama_parse_corrected.json"
+    with open(raw_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-            # 타입별 항목 수 집계
-            type_counts = {}
-            for item in items:
-                if item.type not in type_counts:
-                    type_counts[item.type] = 0
-                type_counts[item.type] += 1
+    for page_num, corrected_sections in page_corrections.items():
+        page = data["pages"][page_num - 1]
+        for corr in corrected_sections:
+            for item in page["items"]:
+                if item["type"] == "heading" and item["value"] == corr["header_text"]:
+                    item["bBox"]["y"] = corr["y"]
 
-            print("\n타입별 항목 수:")
-            for type_name, count in type_counts.items():
-                print(f"- {type_name}: {count}개")
-
-            # 헤더 분석
-            headers = [item for item in items if item.type == "heading"]
-            print(f"\n헤더 수: {len(headers)}")
-            for header in headers:
-                print(f"\n레벨 {header.lvl} 헤더: {header.value}")
-                print(f"  위치: y={header.bBox.y:.2f}, h={header.bBox.h:.2f}")
-
-        # 섹션 좌표 추출
-        sections = extract_section_coordinates(result.pages)
-
-        # 섹션 정보 저장
-        coords_path = output_dir / f"{pdf_path.stem}_sections.json"
-        with open(coords_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {"pdf_path": str(pdf_path), "sections": sections},
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-
-        print(f"\n섹션 좌표 파일 저장됨: {coords_path}")
-
-        # 섹션별 이미지 추출
-        crop_pdf_sections(result, sections, output_dir)
-
-        # 결과 요약
-        print("\n=== 처리 결과 ===")
-        print(f"처리된 페이지 수: {len(result.pages)}")
-        print(f"추출된 섹션 수: {len(sections)}")
-
-        # 섹션 좌표 예시 출력
-        print("\n=== 섹션 좌표 예시 ===")
-        for section in sections[:3]:  # 처음 3개 섹션만 출력
-            print(f"\n페이지 {section['page']}:")
-            print(f"  헤더 레벨: {section['header_level']}")
-            print(f"  헤더 텍스트: {section['header_text']}")
-            print(f"  시작 y: {section['y']:.2f}")
-            print(f"  끝 y: {section['next_y']:.2f}")
-            print(f"  항목 수: {len(section['items'])}")
-
-    except Exception as e:
-        print(f"테스트 중 오류 발생: {e}")
-        import traceback
-
-        traceback.print_exc()
+    with open(corrected_json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"보정된 y좌표 반영 JSON 저장: {corrected_json_path}")
 
 
 if __name__ == "__main__":

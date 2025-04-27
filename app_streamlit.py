@@ -5,6 +5,7 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 import openai
+import json
 
 
 st.set_page_config(page_title="PDF Chat App", layout="wide")
@@ -17,7 +18,7 @@ if "faiss_db" not in st.session_state:
     st.session_state["faiss_db"] = None
 
 with col_chat:
-    st.header("💬 교육 자료 검색하기")
+    st.header("💬 교육 자료 생성하기")
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = []
     # 채팅 내역 표시
@@ -25,38 +26,26 @@ with col_chat:
         st.markdown(f"**{msg['role']}**: {msg['content']}")
     # 사용자 입력
     user_input = st.text_input("메시지를 입력하세요", key="user_input")
-    if st.button("전송"):
-        if user_input:
-            st.session_state["chat_history"].append(
-                {"role": "user", "content": user_input}
-            )
-            st.session_state["user_input"] = ""  # 입력창 초기화
+
     # 검색 버튼 및 결과 출력
     if st.button("검색"):
         if st.session_state["faiss_db"] is not None and user_input:
             retriever = st.session_state["faiss_db"].as_retriever(
-                search_type="similarity", search_kwargs={"k": 5}
+                search_type="similarity", search_kwargs={"k": 3}
             )
-            # invoke가 (doc, score) 튜플을 반환하도록 가정
-            results = retriever.invoke(user_input, return_score=True)
-
-            # 헤더 가중치 적용 함수
-            def custom_score(doc, query, base_score):
-                header_text = doc.metadata.get("header_text", "")
-                if query in header_text:
-                    return base_score + 0.2  # 헤더에 포함되면 0.2점 추가
-                return base_score
-
-            # 헤더 가중치 적용 및 정렬
-            scored_results = [
-                (doc, custom_score(doc, user_input, score)) for doc, score in results
-            ]
-            scored_results.sort(key=lambda x: x[1], reverse=True)
-            st.subheader("검색 결과 (헤더 가중치 적용)")
-            for i, (doc, score) in enumerate(scored_results):
-                st.markdown(f"**결과 {i+1} (점수: {score:.3f})**")
-                st.code(doc.page_content)
-                st.json(doc.metadata)
+            results = retriever.invoke(user_input)
+            st.subheader("검색 결과")
+            if isinstance(results, list):
+                for i, doc in enumerate(results):
+                    page = doc.metadata.get("page_number", "알 수 없음")
+                    st.markdown(f"**결과 {i+1} (페이지: {page})**")
+                    st.code(doc.page_content)
+                    st.json(doc.metadata)
+            else:
+                page = results.metadata.get("page_number", "알 수 없음")
+                st.markdown(f"**결과 (페이지: {page})**")
+                st.code(results.page_content)
+                st.json(results.metadata)
         else:
             st.warning("먼저 FAISS에 임베딩을 저장하고, 검색어를 입력하세요.")
 
@@ -91,11 +80,12 @@ with col_upload:
                 extract_charts=True,
                 save_images=True,
                 output_tables_as_HTML=False,
-                max_pages=6,
+                max_pages=7,
             )
             st.info("llama_parse 실행 중...")
             result = parser_obj.parse(temp_pdf_path)
-            md_docs = result.get_markdown_documents()
+            # split_by_page=True로 md_docs 생성
+            md_docs = result.get_markdown_documents(split_by_page=True)
             st.session_state["md_docs"] = md_docs  # 세션에 저장
             st.success("마크다운 문서 생성 완료!")
             if md_docs:
@@ -114,7 +104,7 @@ with col_upload:
         md_save_path = st.session_state["md_save_path"]
         with open(md_save_path, "r", encoding="utf-8") as f:
             md_text = f.read()
-        # 1. Split
+        # 1. Split (페이지별로)
         headers_to_split_on = [
             ("#", "Header 1"),
             ("##", "Header 2"),
@@ -123,16 +113,18 @@ with col_upload:
         markdown_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=headers_to_split_on
         )
-        md_header_splits = markdown_splitter.split_text(md_text)
-        # 각 chunk에 header_text 필드 추가
-        for chunk in md_header_splits:
-            headers = [v for k, v in chunk.metadata.items() if k.startswith("Header")]
-            chunk.metadata["header_text"] = " ".join(headers)
+        all_chunks = []
+        md_docs = st.session_state.get("md_docs", [])
+        for doc in md_docs:
+            chunks = markdown_splitter.split_text(doc.text)
+            for chunk in chunks:
+                chunk.metadata["page_number"] = doc.metadata.get("page_number")
+            all_chunks.extend(chunks)
         # 2. 임베딩
         embeddings = OpenAIEmbeddings()
         # 3. FAISS 벡터 DB 저장
-        db = FAISS.from_documents(md_header_splits, embeddings)
+        db = FAISS.from_documents(all_chunks, embeddings)
         st.session_state["faiss_db"] = db  # 세션에 저장
         st.success(
-            f"{len(md_header_splits)}개 chunk가 임베딩되어 FAISS에 저장되었습니다. 이제 검색이 가능합니다."
+            f"{len(all_chunks)}개 chunk가 임베딩되어 FAISS에 저장되었습니다. 이제 검색이 가능합니다."
         )
