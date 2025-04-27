@@ -121,7 +121,7 @@ with col_upload:
             # 미리보기는 제공하지 않음
 
     # 임베딩 및 FAISS 저장 버튼
-    if "md_save_path" in st.session_state and st.button("임베딩 및 FAISS 저장"):
+    if "md_save_path" in st.session_state and st.button("임베딩 및 벡터스토어 저장"):
         md_save_path = st.session_state["md_save_path"]
         with open(md_save_path, "r", encoding="utf-8") as f:
             md_text = f.read()
