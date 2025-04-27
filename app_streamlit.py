@@ -7,6 +7,9 @@ from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
+from PIL import Image as PILImage
+from pptx.enum.text import PP_ALIGN
+
 
 nest_asyncio.apply()
 from llama_cloud_services import LlamaParse
@@ -67,6 +70,7 @@ with col_upload:
     st.header("📄 파일 업로드")
     uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type=["pdf"])
     if uploaded_file:
+        st.session_state["uploaded_pdf_name"] = uploaded_file.name
         st.info("파일이 업로드되었습니다. 아래 버튼을 눌러 파싱을 시작하세요.")
         output_dir = "temp_output"
         os.makedirs(output_dir, exist_ok=True)
@@ -349,6 +353,7 @@ def extract_headers_from_llamaparse_items(items, page_number):
                     "page": page_number,
                     "level": getattr(item, "lvl", 1),
                     "text": getattr(item, "value", ""),
+                    "page_number": page_number,
                 }
             )
     return headers
@@ -358,7 +363,7 @@ def build_header_dictionary(headers, ocr_results_dict, output_dir="temp_output")
     """
     headers: [{page, level, text}, ...]
     ocr_results_dict: {page_number: ocr_result, ...}
-    return: {"header_text": {page, level, text, y, crop_image_path}}
+    return: {"header_text": {page, level, text, y, crop_image_path, Header 1, Header 2, Header 3}}
     """
     header_dict = {}
     from collections import defaultdict
@@ -368,14 +373,34 @@ def build_header_dictionary(headers, ocr_results_dict, output_dir="temp_output")
     for header in headers:
         if header["y"] is not None:
             page_to_headers[header["page"]].append(header)
-    for page_number, page_headers in page_to_headers.items():
+    
+    # 각 페이지별로 Header 1, 2, 3 정보 수집
+    page_headers = defaultdict(lambda: {"Header 1": "", "Header 2": "", "Header 3": ""})
+    for page_number, page_headers_list in page_to_headers.items():
+        # y좌표 기준으로 정렬
+        sorted_headers = sorted(page_headers_list, key=lambda x: x["y"])
+        
+        # 각 레벨별로 가장 위에 있는 헤더를 찾음
+        for header in sorted_headers:
+            level = header["level"]
+            if level == 1 and not page_headers[page_number]["Header 1"]:
+                page_headers[page_number]["Header 1"] = header["text"]
+            elif level == 2 and not page_headers[page_number]["Header 2"]:
+                page_headers[page_number]["Header 2"] = header["text"]
+            elif level == 3 and not page_headers[page_number]["Header 3"]:
+                page_headers[page_number]["Header 3"] = header["text"]
+
+    # 각 페이지의 헤더별로 이미지 생성
+    for page_number, page_headers_list in page_to_headers.items():
         page_img_path = os.path.join(output_dir, f"page_{page_number}.jpg")
         img = Image.open(page_img_path)
         img_height = img.size[1]
+        
         # level별로 그룹화
         level_to_headers = defaultdict(list)
-        for h in page_headers:
+        for h in page_headers_list:
             level_to_headers[h["level"]].append(h)
+        
         for level, headers_in_level in level_to_headers.items():
             headers_in_level = sorted(headers_in_level, key=lambda h: h["y"])
             for i, header in enumerate(headers_in_level):
@@ -386,11 +411,13 @@ def build_header_dictionary(headers, ocr_results_dict, output_dir="temp_output")
                     y_end = img_height
                 if y_end <= y_start:
                     continue
+                
                 out_path = os.path.join(
                     output_dir,
                     f"page_{page_number}_level{level}_header_{i+1}_{header['text'][:10]}.jpg",
                 )
                 crop_image_by_y(page_img_path, y_start, y_end, out_path)
+                
                 key = f"{header['text']}"
                 header_dict[key] = {
                     "page": page_number,
@@ -398,68 +425,259 @@ def build_header_dictionary(headers, ocr_results_dict, output_dir="temp_output")
                     "text": header["text"],
                     "y": y_start,
                     "crop_image_path": out_path,
+                    "Header 1": page_headers[page_number]["Header 1"],
+                    "Header 2": page_headers[page_number]["Header 2"],
+                    "Header 3": page_headers[page_number]["Header 3"],
+                    "page_number": page_number
                 }
+    
     return header_dict
 
 
-def create_footer_text_streamlit(slide, header_info, prs):
-    left = Inches(0.5)
-    top = prs.slide_height - Inches(0.8)
-    width = prs.slide_width - Inches(1)
+def add_source_text(slide, header_info, prs, pdf_name=""):
+    """하단 중앙에 출처 텍스트 추가"""
+    # page_number를 header_info에서 직접 가져오기 (page 또는 page_number 키 사용)
+    page_number = header_info.get("page_number") or header_info.get("page", "?")
+
+    # 출처 텍스트 박스
+    width = Inches(6)  # 고정된 너비
+    left = (prs.slide_width - width) / 2  # 중앙 정렬
+    top = prs.slide_height - Inches(1.2)  # AI 고지 문구 위에 위치
     height = Inches(0.5)
-    txBox = slide.shapes.add_textbox(left, top, width, height)
-    tf = txBox.text_frame
-    # 계층적으로 헤더 텍스트 생성
+
+    ref_box = slide.shapes.add_textbox(left, top, width, height)
+    ref_tf = ref_box.text_frame
+    ref_tf.word_wrap = True
+
+    p_ref = ref_tf.paragraphs[0]
+    p_ref.alignment = PP_ALIGN.CENTER
+
+    run1 = p_ref.add_run()
+    run1.text = "[출처: "
+    run1.font.size = Pt(12)
+    run1.font.color.rgb = RGBColor(120, 120, 120)
+
+    run2 = p_ref.add_run()
+    run2.text = f'"{pdf_name}", {page_number}page]'
+    run2.font.size = Pt(12)
+    run2.font.color.rgb = RGBColor(120, 120, 120)
+
+def add_header_path(slide, header_info, prs):
+    """제목 위에 계층적 헤더 경로 추가"""
+    # level과 text를 사용해 계층적 헤더 구성
+    level = header_info.get("level", 0)
+    text = header_info.get("text", "")
+    
+    # 현재 헤더의 상위 헤더들을 찾기 위해 page와 y좌표 사용
+    page = header_info.get("page", 0)
+    y = header_info.get("y", 0)
+    
+    # 같은 페이지의 모든 헤더를 가져와서 y좌표 기준으로 정렬
+    all_headers = []
+    for key, info in st.session_state.get("header_dict", {}).items():
+        if info.get("page") == page:
+            all_headers.append(info)
+    
+    # y좌표 기준으로 정렬
+    all_headers.sort(key=lambda x: x.get("y", 0))
+    
+    # 현재 헤더보다 위에 있는 헤더들 중 직계 상위 헤더만 찾기
+    header_text = ""
+    for h in all_headers:
+        if h.get("y", 0) < y:
+            h_level = h.get("level", 0)
+            # 현재 헤더의 직계 상위 헤더만 추가
+            if h_level == level - 1:
+                if header_text:
+                    header_text += " >> "
+                header_text += h.get("text", "")
+    
+    # 현재 헤더 추가
+    if header_text:
+        header_text += " >> " + text
+    else:
+        header_text = text
+
+    # 헤더 경로 텍스트 박스
+    left = Inches(0.3)
+    top = Inches(0.4)  # 제목보다 더 위에 위치
+    width = prs.slide_width - Inches(0.6)
+    height = Inches(0.5)
+
+    path_box = slide.shapes.add_textbox(left, top, width, height)
+    path_tf = path_box.text_frame
+    path_tf.word_wrap = True
+
+    p_path = path_tf.paragraphs[0]
+    p_path.text = header_text
+    p_path.font.size = Pt(12)  # 12pt로 변경
+    p_path.font.bold = True
+    p_path.font.color.rgb = RGBColor(0, 0, 255)  # 파란색
+    p_path.alignment = PP_ALIGN.LEFT
+
+def add_title_text(slide, header_info, prs):
+    """상단에 큰 제목 추가"""
+    # Header 텍스트를 계층적으로 구성
     header_text = ""
     if header_info.get("Header 1"):
         header_text += header_info["Header 1"]
     if header_info.get("Header 2"):
         if header_text:
-            header_text += " - "
+            header_text += "-"
         header_text += header_info["Header 2"]
     if header_info.get("Header 3"):
         if header_text:
-            header_text += " - "
+            header_text += "-"
         header_text += header_info["Header 3"]
     if not header_text:
         header_text = header_info.get("text", "")
-    p1 = tf.paragraphs[0]
-    p1.text = header_text
-    p1.font.size = Pt(8)
-    p1.font.color.rgb = RGBColor(128, 128, 128)
-    p2 = tf.add_paragraph()
-    p2.text = (
-        "본 자료는 생성형 AI 기반으로 작성되었으며, 중요한 사실은 확인이 필요합니다"
-    )
-    p2.font.size = Pt(8)
-    p2.font.color.rgb = RGBColor(128, 128, 128)
 
+    title_left = Inches(0.3)
+    title_top = Inches(0.6)
+    title_width = prs.slide_width - Inches(0.6)
+    title_height = Inches(1)
 
-def create_ppt_from_header_dict(header_dict, output_pptx):
+    title_box = slide.shapes.add_textbox(title_left, title_top, title_width, title_height)
+    title_tf = title_box.text_frame
+    title_tf.word_wrap = True
+
+    p_title = title_tf.paragraphs[0]
+    p_title.text = header_text
+    p_title.font.size = Pt(24)
+    p_title.font.bold = True
+    p_title.font.color.rgb = RGBColor(80, 80, 80)
+    p_title.alignment = PP_ALIGN.LEFT
+
+def add_ai_notice_text(slide, prs):
+    """하단 중앙에 생성형 AI 고지 문구 추가"""
+    bottom_text = "본 자료는 생성형 AI 기반으로 작성되었으며, 중요한 사실은 확인이 필요합니다."
+
+    box_width = Inches(6)
+    bottom_left = (prs.slide_width - box_width) / 2
+    bottom_top = prs.slide_height - Inches(0.7)
+    bottom_height = Inches(0.5)
+
+    ai_box = slide.shapes.add_textbox(bottom_left, bottom_top, box_width, bottom_height)
+    ai_tf = ai_box.text_frame
+    ai_tf.word_wrap = True
+
+    p_ai = ai_tf.paragraphs[0]
+    p_ai.text = bottom_text
+    p_ai.font.size = Pt(12)
+    p_ai.font.color.rgb = RGBColor(150, 150, 150)
+    p_ai.alignment = PP_ALIGN.CENTER
+
+def add_center_image(slide, header_info, prs):
+    """중앙에 이미지 추가"""
+    img_path = header_info.get("crop_image_path")
+    if img_path and os.path.exists(img_path):
+        with PILImage.open(img_path) as im:
+            img_width, img_height = im.size
+            slide_width = prs.slide_width
+            slide_height = prs.slide_height
+            slide_ratio = slide_width / slide_height
+            img_ratio = img_width / img_height
+
+            if img_ratio > slide_ratio:
+                width = slide_width * 0.85
+                height = width / img_ratio
+            else:
+                height = slide_height * 0.65
+                width = height * img_ratio
+
+        left = int((slide_width - width) / 2)
+        top = int((slide_height - height) / 2)
+        slide.shapes.add_picture(img_path, left, top, int(width), int(height))
+
+def create_ppt_from_header_dict(header_dict, output_pptx, pdf_name="PDF_파일명"):
     prs = Presentation()
     blank_slide_layout = prs.slide_layouts[6]
-    for key, header_info in header_dict.items():
-        slide = prs.slides.add_slide(blank_slide_layout)
-        img_path = header_info.get("crop_image_path")
-        if img_path and os.path.exists(img_path):
-            from PIL import Image as PILImage
 
-            with PILImage.open(img_path) as im:
-                img_width, img_height = im.size
-                slide_width = prs.slide_width
-                slide_height = prs.slide_height
-                slide_ratio = slide_width / slide_height
-                img_ratio = img_width / img_height
-                if img_ratio > slide_ratio:
-                    width = slide_width * 0.85
-                    height = width / img_ratio
-                else:
-                    height = slide_height * 0.85
-                    width = height * img_ratio
+    # 첫 번째 슬라이드에 표지 추가
+    cover_slide = prs.slides.add_slide(blank_slide_layout)
+    
+    # 교보 로고 이미지 추가
+    logo_path = os.path.join("temp_output", "kyobo_logo.jpg")
+    if os.path.exists(logo_path):
+        # 이미지 크기 계산 (가로가 슬라이드에 꽉 차도록)
+        with PILImage.open(logo_path) as im:
+            img_width, img_height = im.size
+            slide_width = prs.slide_width
+            slide_height = prs.slide_height
+            
+            # 가로가 슬라이드에 꽉 차도록 비율 계산
+            width = slide_width
+            height = (img_height / img_width) * width
+            
+            # 세로가 슬라이드보다 크면 세로 기준으로 다시 계산
+            if height > slide_height:
+                height = slide_height
+                width = (img_width / img_height) * height
+            
+            # 이미지를 중앙에 배치
             left = int((slide_width - width) / 2)
             top = int((slide_height - height) / 2)
-            slide.shapes.add_picture(img_path, left, top, int(width), int(height))
-        create_footer_text_streamlit(slide, header_info, prs)
+            cover_slide.shapes.add_picture(logo_path, left, top, int(width), int(height))
+    
+    # PDF 이름과 날짜 텍스트 추가
+    from datetime import datetime
+    today = datetime.now().strftime("%Y년 %m월 %d일")
+    
+    # PDF 이름 텍스트 박스
+    pdf_text_left = Inches(0.3)
+    pdf_text_top = Inches(5)  # 로고 아래에 위치
+    pdf_text_width = prs.slide_width - Inches(0.6)
+    pdf_text_height = Inches(0.5)
+    
+    pdf_text_box = cover_slide.shapes.add_textbox(pdf_text_left, pdf_text_top, pdf_text_width, pdf_text_height)
+    pdf_text_tf = pdf_text_box.text_frame
+    pdf_text_tf.word_wrap = True
+    
+    p_pdf = pdf_text_tf.paragraphs[0]
+    p_pdf.text = f'현재 PDF이름: "{pdf_name}"'
+    p_pdf.font.size = Pt(14)
+    p_pdf.font.color.rgb = RGBColor(150, 150, 150)
+    p_pdf.alignment = PP_ALIGN.CENTER
+    
+    # 날짜 텍스트 박스
+    date_text_left = Inches(0.3)
+    date_text_top = Inches(5.5)  # PDF 이름 아래에 위치
+    date_text_width = prs.slide_width - Inches(0.6)
+    date_text_height = Inches(0.5)
+    
+    date_text_box = cover_slide.shapes.add_textbox(date_text_left, date_text_top, date_text_width, date_text_height)
+    date_text_tf = date_text_box.text_frame
+    date_text_tf.word_wrap = True
+    
+    p_date = date_text_tf.paragraphs[0]
+    p_date.text = today
+    p_date.font.size = Pt(12)
+    p_date.font.color.rgb = RGBColor(150, 150, 150)
+    p_date.alignment = PP_ALIGN.CENTER
+
+    # 나머지 슬라이드 생성
+    for key, header_info in header_dict.items():
+        # Header 1 레벨의 헤더는 건너뛰기
+        if header_info.get("level") == 1:
+            continue
+            
+        slide = prs.slides.add_slide(blank_slide_layout)
+
+        # 1. 중앙에 이미지 추가
+        add_center_image(slide, header_info, prs)
+        
+        # 2. 출처 텍스트 추가
+        add_source_text(slide, header_info, prs, pdf_name)
+        
+        # 3. 헤더 경로 추가
+        add_header_path(slide, header_info, prs)
+        
+        # 4. 제목 텍스트 추가
+        add_title_text(slide, header_info, prs)
+        
+        # 5. AI 고지 문구 추가
+        add_ai_notice_text(slide, prs)
+
     prs.save(output_pptx)
 
 
@@ -499,7 +717,8 @@ if st.sidebar.button("전체 파일을 PPT 로 파싱"):
         st.write(header_dict)
         # === PPT 생성 및 다운로드 ===
         pptx_path = os.path.join(output_dir, "exported_slides.pptx")
-        create_ppt_from_header_dict(header_dict, pptx_path)
+        uploaded_pdf_name = st.session_state.get("uploaded_pdf_name", "PDF_파일명")
+        create_ppt_from_header_dict(header_dict, pptx_path, pdf_name=uploaded_pdf_name)
         with open(pptx_path, "rb") as f:
             st.sidebar.download_button(
                 label="PPT 다운로드",
@@ -517,7 +736,8 @@ if st.sidebar.button("세션의 헤더 dictionary로 PPT 만들기"):
     else:
         output_dir = "temp_output"
         pptx_path = os.path.join(output_dir, "exported_slides_from_session.pptx")
-        create_ppt_from_header_dict(header_dict, pptx_path)
+        uploaded_pdf_name = st.session_state.get("uploaded_pdf_name", "PDF_파일명")
+        create_ppt_from_header_dict(header_dict, pptx_path, pdf_name=uploaded_pdf_name)
         with open(pptx_path, "rb") as f:
             st.sidebar.download_button(
                 label="PPT 다운로드 (세션 헤더 dictionary)",
