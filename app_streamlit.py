@@ -11,6 +11,7 @@ from pptx.dml.color import RGBColor
 from PIL import Image as PILImage
 from pptx.enum.text import PP_ALIGN
 import time
+import pandas as pd
 
 
 nest_asyncio.apply()
@@ -809,6 +810,10 @@ with col_upload:
             st.session_state["header_dict"] = header_dict
             # 파싱이 끝난 직후 최신 header_dict로 PPT 생성
             create_ppt_from_header_dict(list(header_dict.values()), pptx_path)
+            # header_dict를 표로 시각화
+            df = pd.DataFrame(list(header_dict.values()))
+            st.subheader("파싱된 헤더/이미지 정보 표")
+            st.dataframe(df)
             progress_bar.progress(100, text="생성 완료!")
             status_text.success("모든 파일이 파싱된 PPT 생성 완료!")
             st.session_state["pptx_path"] = pptx_path
