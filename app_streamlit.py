@@ -517,20 +517,12 @@ def add_header_path(slide, header_info, prs):
 
 def add_title_text(slide, header_info, prs):
     """상단에 큰 제목 추가"""
-    # Header 텍스트를 계층적으로 구성
-    header_text = ""
-    if header_info.get("Header 1"):
-        header_text += header_info["Header 1"]
-    if header_info.get("Header 2"):
-        if header_text:
-            header_text += "-"
-        header_text += header_info["Header 2"]
-    if header_info.get("Header 3"):
-        if header_text:
-            header_text += "-"
-        header_text += header_info["Header 3"]
-    if not header_text:
-        header_text = header_info.get("text", "")
+    # 계층적 헤더 경로에서 마지막 부분만 추출
+    header_path = header_info.get("text", "")
+    if " >> " in header_path:
+        title_text = header_path.split(" >> ")[-1]
+    else:
+        title_text = header_path
 
     title_left = Inches(0.3)
     title_top = Inches(0.6)
@@ -542,7 +534,7 @@ def add_title_text(slide, header_info, prs):
     title_tf.word_wrap = True
 
     p_title = title_tf.paragraphs[0]
-    p_title.text = header_text
+    p_title.text = title_text
     p_title.font.size = Pt(24)
     p_title.font.bold = True
     p_title.font.color.rgb = RGBColor(80, 80, 80)
