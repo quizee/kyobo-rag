@@ -7,8 +7,8 @@ from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
 
 # 이미지가 있는 폴더 경로
-SECTIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'test_output', 'sections')
-OUTPUT_PPTX = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'test_output', 'test-output.pptx')
+SECTIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'temp_output', 'sections')
+OUTPUT_PPTX = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'temp_output', 'test-output.pptx')
 
 def create_footer_text(slide, metadata, presentation):
     # 텍스트 상자 추가

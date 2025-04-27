@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 import nest_asyncio
 import re
 from PIL import Image
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
 
 nest_asyncio.apply()
 from llama_cloud_services import LlamaParse
@@ -260,7 +263,10 @@ def extract_header_y_from_ocr_response(
                     return y_top, line_text, bbox_list
         else:
             # 일반: 부분 문자열 + 라인 길이 제한
-            if norm_header in norm_line and len(norm_line) <= len(norm_header) * 1.5:
+            if (
+                ocr_compare_header in norm_line
+                and len(norm_line) <= len(ocr_compare_header) * 1.5
+            ):
                 all_y = [
                     v["y"] for f in line_fields for v in f["boundingPoly"]["vertices"]
                 ]
@@ -290,47 +296,47 @@ def crop_image_by_y(image_path, y_start, y_end, output_path):
     return output_path
 
 
-# 사용 예시 (Streamlit sidebar에서 테스트)
-if st.sidebar.button("테스트: 헤더 y좌표 찾기 (CLOVA OCR, multipart)"):
-    test_meta = {
-        "Header 1": "미리 체크해보는 교보마이플랜건강보험[2411](무배당)",
-        "Header 2": "참치료",  # 암진단 암치료 수술 입원 재해
-        "page_number": 7,
-        # 암치료 - 참치료
-    }
-    st.write(test_meta)
-    page_img_path = os.path.join("temp_output", f"page_{test_meta['page_number']}.jpg")
-    api_url = "https://8vb79ndbzb.apigw.ntruss.com/custom/v1/41373/3a26df9469f0c22bb024a70d5cc5e11a9fb28f6ea21993ba8eee769f4dda9216/general"
-    secret_key = os.getenv("CLOVA_OCR_SECRET_KEY")
-    st.write(page_img_path, api_url, secret_key)
-    try:
-        ocr_result = clova_ocr_multipart(page_img_path, api_url, secret_key)
-        st.write(ocr_result)
-        # 헤더 위치 찾기
-        header_text = test_meta["Header 2"]
-        y, matched_text, bbox = extract_header_y_from_ocr_response(
-            ocr_result, header_text, image_path=page_img_path
-        )
-        if y is not None:
-            st.sidebar.success(f"헤더 '{header_text}'의 y좌표: {y}")
-            st.sidebar.write(f"매칭된 텍스트: {matched_text}")
-            st.sidebar.write(f"bbox: {bbox}")
-            # === 이미지 crop ===
-            img = Image.open(page_img_path)
-            img_height = img.size[1]
-            y_start = y
-            y_end = img_height  # 예시: 헤더부터 끝까지 crop
-            cropped_path = os.path.join(
-                "temp_output", f"page_{test_meta['page_number']}_cropped.jpg"
-            )
-            crop_image_by_y(page_img_path, y_start, y_end, cropped_path)
-            st.sidebar.info(f"Crop된 이미지 저장: {cropped_path}")
-            st.sidebar.image(cropped_path)
-            # ===================
-        else:
-            st.sidebar.error("헤더를 찾지 못했습니다.")
-    except Exception as e:
-        st.sidebar.error(f"OCR 호출 실패: {e}")
+# # 사용 예시 (Streamlit sidebar에서 테스트)
+# if st.sidebar.button("테스트: 헤더 y좌표 찾기 (CLOVA OCR, multipart)"):
+#     test_meta = {
+#         "Header 1": "미리 체크해보는 교보마이플랜건강보험[2411](무배당)",
+#         "Header 2": "참치료",  # 암진단 암치료 수술 입원 재해
+#         "page_number": 7,
+#         # 암치료 - 참치료
+#     }
+#     st.write(test_meta)
+#     page_img_path = os.path.join("temp_output", f"page_{test_meta['page_number']}.jpg")
+#     api_url = "https://8vb79ndbzb.apigw.ntruss.com/custom/v1/41373/3a26df9469f0c22bb024a70d5cc5e11a9fb28f6ea21993ba8eee769f4dda9216/general"
+#     secret_key = os.getenv("CLOVA_OCR_SECRET_KEY")
+#     st.write(page_img_path, api_url, secret_key)
+#     try:
+#         ocr_result = clova_ocr_multipart(page_img_path, api_url, secret_key)
+#         st.write(ocr_result)
+#         # 헤더 위치 찾기
+#         header_text = test_meta["Header 2"]
+#         y, matched_text, bbox = extract_header_y_from_ocr_response(
+#             ocr_result, header_text, image_path=page_img_path
+#         )
+#         if y is not None:
+#             st.sidebar.success(f"헤더 '{header_text}'의 y좌표: {y}")
+#             st.sidebar.write(f"매칭된 텍스트: {matched_text}")
+#             st.sidebar.write(f"bbox: {bbox}")
+#             # === 이미지 crop ===
+#             img = Image.open(page_img_path)
+#             img_height = img.size[1]
+#             y_start = y
+#             y_end = img_height  # 예시: 헤더부터 끝까지 crop
+#             cropped_path = os.path.join(
+#                 "temp_output", f"page_{test_meta['page_number']}_cropped.jpg"
+#             )
+#             crop_image_by_y(page_img_path, y_start, y_end, cropped_path)
+#             st.sidebar.info(f"Crop된 이미지 저장: {cropped_path}")
+#             st.sidebar.image(cropped_path)
+#             # ===================
+#         else:
+#             st.sidebar.error("헤더를 찾지 못했습니다.")
+#     except Exception as e:
+#         st.sidebar.error(f"OCR 호출 실패: {e}")
 
 
 def extract_headers_from_llamaparse_items(items, page_number):
@@ -396,6 +402,67 @@ def build_header_dictionary(headers, ocr_results_dict, output_dir="temp_output")
     return header_dict
 
 
+def create_footer_text_streamlit(slide, header_info, prs):
+    left = Inches(0.5)
+    top = prs.slide_height - Inches(0.8)
+    width = prs.slide_width - Inches(1)
+    height = Inches(0.5)
+    txBox = slide.shapes.add_textbox(left, top, width, height)
+    tf = txBox.text_frame
+    # 계층적으로 헤더 텍스트 생성
+    header_text = ""
+    if header_info.get("Header 1"):
+        header_text += header_info["Header 1"]
+    if header_info.get("Header 2"):
+        if header_text:
+            header_text += " - "
+        header_text += header_info["Header 2"]
+    if header_info.get("Header 3"):
+        if header_text:
+            header_text += " - "
+        header_text += header_info["Header 3"]
+    if not header_text:
+        header_text = header_info.get("text", "")
+    p1 = tf.paragraphs[0]
+    p1.text = header_text
+    p1.font.size = Pt(8)
+    p1.font.color.rgb = RGBColor(128, 128, 128)
+    p2 = tf.add_paragraph()
+    p2.text = (
+        "본 자료는 생성형 AI 기반으로 작성되었으며, 중요한 사실은 확인이 필요합니다"
+    )
+    p2.font.size = Pt(8)
+    p2.font.color.rgb = RGBColor(128, 128, 128)
+
+
+def create_ppt_from_header_dict(header_dict, output_pptx):
+    prs = Presentation()
+    blank_slide_layout = prs.slide_layouts[6]
+    for key, header_info in header_dict.items():
+        slide = prs.slides.add_slide(blank_slide_layout)
+        img_path = header_info.get("crop_image_path")
+        if img_path and os.path.exists(img_path):
+            from PIL import Image as PILImage
+
+            with PILImage.open(img_path) as im:
+                img_width, img_height = im.size
+                slide_width = prs.slide_width
+                slide_height = prs.slide_height
+                slide_ratio = slide_width / slide_height
+                img_ratio = img_width / img_height
+                if img_ratio > slide_ratio:
+                    width = slide_width * 0.85
+                    height = width / img_ratio
+                else:
+                    height = slide_height * 0.85
+                    width = height * img_ratio
+            left = int((slide_width - width) / 2)
+            top = int((slide_height - height) / 2)
+            slide.shapes.add_picture(img_path, left, top, int(width), int(height))
+        create_footer_text_streamlit(slide, header_info, prs)
+    prs.save(output_pptx)
+
+
 # 헤더 dictionary 생성 Streamlit 버튼
 if st.sidebar.button("전체 파일을 PPT 로 파싱"):
     result = st.session_state.get("llama_parse_result")
@@ -430,3 +497,31 @@ if st.sidebar.button("전체 파일을 PPT 로 파싱"):
         st.session_state["header_dict"] = header_dict
         st.sidebar.success("헤더 dictionary 생성 및 이미지 crop 완료!")
         st.write(header_dict)
+        # === PPT 생성 및 다운로드 ===
+        pptx_path = os.path.join(output_dir, "exported_slides.pptx")
+        create_ppt_from_header_dict(header_dict, pptx_path)
+        with open(pptx_path, "rb") as f:
+            st.sidebar.download_button(
+                label="PPT 다운로드",
+                data=f,
+                file_name="exported_slides.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+
+if st.sidebar.button("세션의 헤더 dictionary로 PPT 만들기"):
+    header_dict = st.session_state.get("header_dict")
+    if not header_dict:
+        st.sidebar.error(
+            "세션에 저장된 header_dict가 없습니다. 먼저 헤더 dictionary를 생성하세요."
+        )
+    else:
+        output_dir = "temp_output"
+        pptx_path = os.path.join(output_dir, "exported_slides_from_session.pptx")
+        create_ppt_from_header_dict(header_dict, pptx_path)
+        with open(pptx_path, "rb") as f:
+            st.sidebar.download_button(
+                label="PPT 다운로드 (세션 헤더 dictionary)",
+                data=f,
+                file_name="exported_slides_from_session.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
