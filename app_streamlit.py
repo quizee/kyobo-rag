@@ -472,7 +472,7 @@ def add_muscle_image(slide, prs):
 
 
 def create_ppt_from_header_dict(
-    header_list, output_pptx, pdf_name="교보마이플랜건강보험[2409](무배당)"
+    header_list, output_pptx, pdf_name="교보마이플랜건강보험"
 ):
     prs = Presentation()
     blank_slide_layout = prs.slide_layouts[6]
@@ -694,7 +694,7 @@ with col_chat:
 
             if selected_headers:
                 create_ppt_from_header_dict(
-                    selected_headers, pptx_path, uploaded_file.name
+                    selected_headers, pptx_path, "교보마이플랜건강보험"
                 )
                 st.session_state["search_pptx_path"] = pptx_path
             else:
@@ -866,7 +866,11 @@ with col_upload:
             )
             st.session_state["header_dict"] = header_dict
             # 파싱이 끝난 직후 최신 header_dict로 PPT 생성
-            create_ppt_from_header_dict(list(header_dict.values()), pptx_path)
+            create_ppt_from_header_dict(
+                list(header_dict.values()),
+                pptx_path,
+                "교보마이플랜건강보험",
+            )
             # header_dict를 표로 시각화
             df = pd.DataFrame(list(header_dict.values()))
             st.subheader("파싱된 헤더/이미지 정보 표")
