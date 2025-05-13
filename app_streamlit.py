@@ -673,7 +673,9 @@ with col_chat:
 
             st.session_state["selected_headers"] = selected_headers
             # 검색 시점에 PPT를 미리 생성하고 경로를 세션에 저장
-            pptx_path = os.path.join("ppt_layout", "search_results.pptx")
+            search_output_dir = "temp_output"
+            os.makedirs(search_output_dir, exist_ok=True)
+            pptx_path = os.path.join("temp_output", "search_results.pptx")
 
             if selected_headers:
                 # selected_headers를 딕셔너리 형태로 변환
@@ -683,7 +685,7 @@ with col_chat:
                         selected_headers_dict[header["text"]] = header
 
                 if selected_headers_dict:
-                    pdf_name = get_uploaded_pdf_name(output_dir)
+                    pdf_name = get_uploaded_pdf_name(search_output_dir)
                     create_ppt_from_header_dict(
                         selected_headers_dict, pptx_path, pdf_name
                     )
