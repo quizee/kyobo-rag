@@ -38,19 +38,12 @@ def crop_image_by_y(
     try:
         img = Image.open(image_path)
         img_width, img_height = img.size
-        print(f"Cropping image {image_path}:")
-        print(f"Original size: {img_width}x{img_height}")
-        print(f"Requested crop: y_start={y_start:.2f}, y_end={y_end:.2f}")
 
         # 여백 적용 (부동소수점 유지)
         y_start = max(0, y_start - margin_top)
         y_end = min(img_height, y_end)
         x_start = max(0, margin_side)
         x_end = min(img_width, img_width - margin_side)
-
-        print(
-            f"Adjusted crop: x_start={x_start:.2f}, x_end={x_end:.2f}, y_start={y_start:.2f}, y_end={y_end:.2f}"
-        )
 
         if y_end <= y_start or x_end <= x_start:
             print("Invalid crop dimensions")
@@ -59,9 +52,7 @@ def crop_image_by_y(
         # 최종적으로 정수로 변환 (이미지 크롭 시에만)
         crop_box = (int(x_start), int(y_start), int(x_end), int(y_end))
         cropped = img.crop(crop_box)
-        print(f"Cropped size: {cropped.size}")
         cropped.save(output_path)
-        print(f"Saved to: {output_path}")
         return output_path
     except Exception as e:
         print(f"Error cropping image: {str(e)}")
@@ -890,7 +881,10 @@ with col_upload:
                         if text in header_dict:
                             header_info = header_dict[text]
                             level = header_info["level"]
-                            page_content.append(f"{'#' * (level - 1)}{" "}{text}")
+                            page_content.append(f"{'#' * (level)}{" "}{text}")
+                            print(f"[헤더 매칭] '{text}' -> Level {level}")
+                        else:
+                            print(f"[헤더 매칭 실패] '{text}'")
                     else:
                         # 본문인 경우
                         text = content.get("markdown", "").strip()
@@ -918,8 +912,7 @@ with col_upload:
 
             # 임베딩 및 벡터스토어 생성
             headers_to_split_on = [
-                ("#", "Header 1"),
-                ("##", "Header 2"),
+                ("##", "Header 2"),  # Header 1 제외
                 ("###", "Header 3"),
             ]
             markdown_splitter = MarkdownHeaderTextSplitter(
@@ -929,30 +922,29 @@ with col_upload:
             md_docs = st.session_state.get("md_docs", [])
 
             # chunk 생성 로깅
-            print("\n=== Chunk 생성 로그 ===")
+            print("\n=== Chunk 생성 요약 ===")
+            total_chunks = 0
             for page_num, doc in enumerate(md_docs, 1):
-                print(f"\n[페이지 {page_num}]")
-                print("원본 문서:")
-                print("-" * 50)
-                print(doc)
-                print("-" * 50)
-
                 chunks = markdown_splitter.split_text(doc)
-                print(f"생성된 chunk 수: {len(chunks)}")
+                total_chunks += len(chunks)
+                print(f"페이지 {page_num}: {len(chunks)}개 chunk")
 
-                for i, chunk in enumerate(chunks, 1):
-                    print(f"\n[Chunk {i}]")
-                    print("메타데이터:", chunk.metadata)
-                    print("내용:")
-                    print("-" * 30)
-                    print(chunk.page_content)
-                    print("-" * 30)
+                # 각 chunk의 헤더 정보만 간단히 출력
+                for chunk in chunks:
+                    headers = [
+                        f"{k}: {v}"
+                        for k, v in chunk.metadata.items()
+                        if k.startswith("Header")
+                    ]
+                    if headers:
+                        print(f"  - {headers[0]}")
                     chunk.metadata["page_number"] = page_num
 
+                # chunks를 all_chunks에 추가
                 all_chunks.extend(chunks)
 
-            print(f"\n총 생성된 chunk 수: {len(all_chunks)}")
-            print("=== Chunk 생성 완료 ===\n")
+            print(f"\n총 {total_chunks}개 chunk 생성 완료 (Header 1 제외)")
+            print("=====================\n")
 
             progress_bar.progress(70, text="임베딩 계산중...")
             embeddings = OpenAIEmbeddings()
