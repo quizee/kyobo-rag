@@ -781,10 +781,18 @@ with col_upload:
             progress_bar.progress(10, text="문서 파싱 시작...")
             status_text.info("문서 파싱 시작...")
 
-            parser_obj = UpstageParser()
-            result = parser_obj.parse(temp_pdf_path)
+            # 파싱 시작 시각 기록
+            start_time = time.time()
 
-            # 페이지별로 요소들을 그룹화
+            parser_obj = UpstageParser()
+            progress_bar.progress(10, text="Upstage parser를 호출하고 있습니다")
+            status_text.info("Upstage parser를 호출하고 있습니다.")
+
+            result = parser_obj.parse(temp_pdf_path)
+            progress_bar.progress(20, text="Upstage parser 호출 완료")
+            status_text.info("Upstage parser 호출이 완료되었습니다.")
+
+            # 2. 페이지별 헤더 정보 추출
             pages = {}
             for element in result.get("elements", []):
                 page_num = element.get("page", 1)
@@ -965,8 +973,14 @@ with col_upload:
             df = pd.DataFrame(list(header_dict.values()))
             st.subheader("파싱된 주제별 정보 표")
             st.dataframe(df)
-            progress_bar.progress(100, text="생성 완료!")
-            status_text.success("모든 파일이 파싱된 PPT 생성 완료!")
+            # 파싱 및 PPT 생성 전체 소요 시간 표시
+            elapsed = time.time() - start_time
+            progress_bar.progress(
+                100, text=f"생성 완료! (총 소요 시간: {elapsed:.1f}초)"
+            )
+            status_text.success(
+                f"모든 파일이 파싱된 PPT 생성 완료! (총 소요 시간: {elapsed:.1f}초)"
+            )
             st.session_state["pptx_path"] = pptx_path
             st.session_state["parsing_in_progress"] = False
             # 파싱 직후 다운로드 버튼 바로 노출
