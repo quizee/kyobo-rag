@@ -890,7 +890,7 @@ with col_upload:
                         if text in header_dict:
                             header_info = header_dict[text]
                             level = header_info["level"]
-                            page_content.append(f"{'#' * (level - 1)}{text}")
+                            page_content.append(f"{'#' * (level - 1)}{" "}{text}")
                     else:
                         # 본문인 경우
                         text = content.get("markdown", "").strip()
@@ -927,11 +927,32 @@ with col_upload:
             )
             all_chunks = []
             md_docs = st.session_state.get("md_docs", [])
+
+            # chunk 생성 로깅
+            print("\n=== Chunk 생성 로그 ===")
             for page_num, doc in enumerate(md_docs, 1):
+                print(f"\n[페이지 {page_num}]")
+                print("원본 문서:")
+                print("-" * 50)
+                print(doc)
+                print("-" * 50)
+
                 chunks = markdown_splitter.split_text(doc)
-                for chunk in chunks:
+                print(f"생성된 chunk 수: {len(chunks)}")
+
+                for i, chunk in enumerate(chunks, 1):
+                    print(f"\n[Chunk {i}]")
+                    print("메타데이터:", chunk.metadata)
+                    print("내용:")
+                    print("-" * 30)
+                    print(chunk.page_content)
+                    print("-" * 30)
                     chunk.metadata["page_number"] = page_num
+
                 all_chunks.extend(chunks)
+
+            print(f"\n총 생성된 chunk 수: {len(all_chunks)}")
+            print("=== Chunk 생성 완료 ===\n")
 
             progress_bar.progress(70, text="임베딩 계산중...")
             embeddings = OpenAIEmbeddings()
