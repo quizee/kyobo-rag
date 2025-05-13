@@ -3,8 +3,7 @@ import os
 from pathlib import Path
 from pdf2image import convert_from_path
 from PIL import Image
-from llama_cloud_services import LlamaParse
-import os
+from scripts.upstage_parser import UpstageParser
 from dotenv import load_dotenv
 import base64
 from io import BytesIO
@@ -174,61 +173,48 @@ if __name__ == "__main__":
 
     load_dotenv()
     parser = argparse.ArgumentParser(
-        description="llama_parse 레이아웃 기반 PDF 섹션 crop"
+        description="upstage parser 레이아웃 기반 PDF 섹션 crop"
     )
     parser.add_argument("--pdf", required=True, help="PDF 파일 경로")
     parser.add_argument(
-        "--llama_json",
+        "--upstage_json",
         default=None,
-        help="llama_parse 결과 JSON 경로 (없으면 자동 생성)",
+        help="upstage parser 결과 JSON 경로 (없으면 자동 생성)",
     )
     parser.add_argument(
         "--output_dir", default="output_by_layout", help="이미지 저장 폴더"
     )
     args = parser.parse_args()
 
-    llama_json_path = args.llama_json
+    upstage_json_path = args.upstage_json
 
-    # 1. llama_parse 실행 및 이미지 저장 (llama_json_path가 없을 때만)
-    if llama_json_path is None:
+    # 1. upstage parser 실행 및 이미지 저장 (upstage_json_path가 없을 때만)
+    if upstage_json_path is None:
         Path(args.output_dir).mkdir(exist_ok=True)
-        parser_obj = LlamaParse(
-            api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
-            num_workers=1,
-            verbose=True,
-            language="ko",
-            extract_layout=True,
-            premium_mode=True,
-            continuous_mode=False,
-            extract_charts=True,
-            save_images=True,
-            output_tables_as_HTML=False,
-            max_pages=7,
-        )
-        print("llama_parse 실행 중...")
+        parser_obj = UpstageParser()
+        print("upstage parser 실행 중...")
         result = parser_obj.parse(str(args.pdf))
-        llama_json_path = str(Path(args.output_dir) / "llama_parse_result.json")
-        with open(llama_json_path, "w", encoding="utf-8") as f:
-            json.dump(serialize_layout(result), f, ensure_ascii=False, indent=2)
-        print(f"llama_parse 결과 저장: {llama_json_path}")
+        upstage_json_path = str(Path(args.output_dir) / "upstage_parse_result.json")
+        parser_obj.save_result(result, upstage_json_path)
+        print(f"upstage parser 결과 저장: {upstage_json_path}")
 
-        # llama_parse 결과에서 이미지 저장
-        for page_num, page in enumerate(result.pages, 1):
-            for img in page.images:
-                if getattr(img, "type", None) == "full_page_screenshot":
-                    image_path = result.save_image(img.name, args.output_dir)
-                    print(f"페이지 {page_num} 전체 이미지 저장: {image_path}")
+        # PDF를 이미지로 변환
+        images = convert_from_path(args.pdf)
+        for page_num, image in enumerate(images, 1):
+            image_path = os.path.join(args.output_dir, f"page_{page_num}.jpg")
+            image.save(image_path, "JPEG")
+            print(f"페이지 {page_num} 전체 이미지 저장: {image_path}")
 
-    # 2. 이후 단계는 llama_json_path가 있든 없든 공통적으로 실행
+    # 2. 이후 단계는 upstage_json_path가 있든 없든 공통적으로 실행
     corrected_json_path = str(
-        Path(args.output_dir) / "llama_parse_corrected_by_openai.json"
+        Path(args.output_dir) / "upstage_parse_corrected_by_openai.json"
     )
 
     # 보정된 JSON 파일이 없으면 먼저 보정 실행
     if not Path(corrected_json_path).exists():
         openai_client = OpenAI()
         correct_heading_y_with_openai(
-            llama_json_path=llama_json_path,
+            llama_json_path=upstage_json_path,
             openai_client=openai_client,
             output_json_path=corrected_json_path,
             output_dir=args.output_dir,
