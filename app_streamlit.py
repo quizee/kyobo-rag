@@ -12,6 +12,8 @@ from PIL import Image as PILImage
 from pptx.enum.text import PP_ALIGN
 import time
 import pandas as pd
+import unicodedata
+from datetime import datetime
 
 
 nest_asyncio.apply()
@@ -29,6 +31,22 @@ from scripts.upstage_parser import UpstageParser
 load_dotenv()
 
 st.set_page_config(page_title="PDF Chat App", layout="wide")
+
+
+# temp_output 폴더에서 유일한 PDF 파일명을 추출하는 함수
+def get_uploaded_pdf_name(output_dir="temp_output"):
+    pdf_files = [f for f in os.listdir(output_dir) if f.endswith(".pdf")]
+    if len(pdf_files) == 1:
+        pdf_name = os.path.splitext(pdf_files[0])[0]
+        print(f"원본 파일명: {pdf_name}")
+        # 유니코드 NFC 정규화
+        pdf_name_nfc = unicodedata.normalize("NFC", pdf_name)
+        # 한글과 공백만 남김
+        pdf_name_kor = re.sub(r"[^가-힣 ]", "", pdf_name_nfc)
+        pdf_name_kor = re.sub(r"\s+", " ", pdf_name_kor).strip()
+        print(f"한글만 추출한 파일명: '{pdf_name_kor}'")
+        return pdf_name_kor if pdf_name_kor else "교보마이플랜건강보험"
+    return "교보마이플랜건강보험"
 
 
 def crop_image_by_y(
@@ -306,6 +324,12 @@ def add_header_path(slide, header_info, prs):
     else:
         header_text = text
 
+    # header_text 한 줄로 만들고, 80자 이상이면 ...으로 자름
+    header_text = re.sub(r"\s+", " ", header_text).strip()
+    MAX_HEADER_PATH_LEN = 80
+    if len(header_text) > MAX_HEADER_PATH_LEN:
+        header_text = header_text[: MAX_HEADER_PATH_LEN - 3] + "..."
+
     # 헤더 경로 텍스트 박스
     left = Inches(0.3)
     top = Inches(0.4)  # 제목보다 더 위에 위치
@@ -416,7 +440,7 @@ def add_center_image(slide, header_info, prs):
 
 def add_layout_image(slide, prs):
     """제목 아래에 레이아웃 이미지 추가"""
-    layout_path = os.path.join("temp_output", "kyobo_layout.jpg")
+    layout_path = os.path.join("layout_ppt", "kyobo_layout.jpg")
     if os.path.exists(layout_path):
         with PILImage.open(layout_path) as im:
             img_width, img_height = im.size
@@ -433,7 +457,7 @@ def add_layout_image(slide, prs):
 
 def add_muscle_image(slide, prs):
     """kyobo_muscle.jpg 이미지 추가"""
-    muscle_path = os.path.join("temp_output", "kyobo_muscle.jpg")
+    muscle_path = os.path.join("layout_ppt", "kyobo_muscle.jpg")
     if os.path.exists(muscle_path):
         # cm를 EMU로 변환 (1cm = 360000 EMU)
         width_cm = 4.05
@@ -448,114 +472,87 @@ def add_muscle_image(slide, prs):
         slide.shapes.add_picture(muscle_path, left, top, width, height)
 
 
-def create_ppt_from_header_dict(header_dict, output_path):
-    """header_dict를 기반으로 PPT 생성"""
-    from pptx import Presentation
-    from pptx.util import Inches, Pt
-
+def create_ppt_from_header_dict(
+    header_dict, output_path, pdf_name="교보마이플랜건강보험"
+):
     prs = Presentation()
     print(f"Creating PPT with {len(header_dict)} headers")
 
-    # 제목 슬라이드 추가
-    title_slide_layout = prs.slide_layouts[0]
-    slide = prs.slides.add_slide(title_slide_layout)
-    title = slide.shapes.title
-    subtitle = slide.placeholders[1]
-    title.text = "교보마이플랜건강보험"
-    subtitle.text = "문서 분석 결과"
+    # 1. 커버(표지) 슬라이드 추가
+    cover_slide_layout = prs.slide_layouts[0]  # 빈 슬라이드
+    cover_slide = prs.slides.add_slide(cover_slide_layout)
 
-    # 각 헤더별로 슬라이드 추가
+    # 표지 이미지 추가 (kyobo_layout2.jpg)
+    layout_path = os.path.join("layout_ppt", "kyobo_layout2.jpg")
+    if os.path.exists(layout_path):
+        with PILImage.open(layout_path) as im:
+            img_width, img_height = im.size
+            slide_width = prs.slide_width
+            slide_height = prs.slide_height
+            width = slide_width
+            height = (img_height / img_width) * width
+            if height > slide_height:
+                height = slide_height
+                width = (img_width / img_height) * height
+            left = int((slide_width - width) / 2)
+            top = int((slide_height - height) / 2)
+            cover_slide.shapes.add_picture(
+                layout_path, left, top, int(width), int(height)
+            )
+
+    # PDF 이름과 날짜 텍스트 추가
+    today = datetime.now().strftime("%Y년 %m월 %d일")
+
+    def cm_to_emu(cm):
+        return int(cm * 360000)
+
+    # PDF 이름
+    pdf_text_left = cm_to_emu(0.76)
+    pdf_text_top = cm_to_emu(7.7)
+    pdf_text_width = prs.slide_width - cm_to_emu(1.52)
+    pdf_text_height = cm_to_emu(1)
+    pdf_text_box = cover_slide.shapes.add_textbox(
+        pdf_text_left, pdf_text_top, pdf_text_width, pdf_text_height
+    )
+    pdf_text_tf = pdf_text_box.text_frame
+    pdf_text_tf.word_wrap = True
+    p_pdf = pdf_text_tf.paragraphs[0]
+    p_pdf.text = f'"{pdf_name}"'
+    p_pdf.font.size = Pt(16)
+    p_pdf.font.color.rgb = RGBColor(150, 150, 150)
+    p_pdf.alignment = PP_ALIGN.CENTER
+    # 날짜
+    date_text_left = cm_to_emu(0.76)
+    date_text_top = cm_to_emu(9.53)
+    date_text_width = prs.slide_width - cm_to_emu(1.52)
+    date_text_height = cm_to_emu(1)
+    date_text_box = cover_slide.shapes.add_textbox(
+        date_text_left, date_text_top, date_text_width, date_text_height
+    )
+    date_text_tf = date_text_box.text_frame
+    date_text_tf.word_wrap = True
+    p_date = date_text_tf.paragraphs[0]
+    p_date.text = today
+    p_date.font.size = Pt(14)
+    p_date.font.color.rgb = RGBColor(150, 150, 150)
+    p_date.alignment = PP_ALIGN.CENTER
+
+    # 2. 본문 슬라이드 생성
+    blank_slide_layout = prs.slide_layouts[6]
     for header_text, header_info in header_dict.items():
-        # Header 1(level==1)은 PPT에 포함하지 않음
         if header_info.get("level") == 1:
             continue
-        print(f"\nProcessing header: {header_text[:30]}...")
-        print(f"Header info: {json.dumps(header_info, indent=2, ensure_ascii=False)}")
-
-        slide_layout = prs.slide_layouts[6]  # 빈 슬라이드 레이아웃 사용
-        slide = prs.slides.add_slide(slide_layout)
-
-        # 헤더 경로 추가
+        slide = prs.slides.add_slide(blank_slide_layout)
         add_header_path(slide, header_info, prs)
-
-        # 제목 추가
         add_title_text(slide, header_info, prs)
-
-        # 이미지 추가
-        crop_image_path = header_info.get("crop_image_path")
-        print(f"Checking image path: {crop_image_path}")
-
-        if crop_image_path:
-            if os.path.exists(crop_image_path):
-                print(f"Image file exists: {crop_image_path}")
-                try:
-                    # 이미지 크기 확인
-                    with Image.open(crop_image_path) as img:
-                        img_width, img_height = img.size
-                        print(f"Image size: {img_width}x{img_height}")
-
-                        # 슬라이드 크기
-                        slide_width = prs.slide_width
-                        slide_height = prs.slide_height
-
-                        # 이미지를 슬라이드 중앙에 배치
-                        # 상단 여백 (제목 아래)
-                        top_margin = Inches(2.0)
-                        # 하단 여백 (출처 텍스트 위)
-                        bottom_margin = Inches(1.5)
-                        # 사용 가능한 높이
-                        available_height = slide_height - top_margin - bottom_margin
-
-                        # 이미지 비율 유지하면서 크기 조정
-                        img_ratio = img_width / img_height
-
-                        # 높이 기준으로 크기 계산
-                        height = available_height
-                        width = height * img_ratio
-
-                        # 너비가 슬라이드 너비의 90%를 넘으면 너비 기준으로 다시 계산
-                        if width > slide_width * 0.9:
-                            width = slide_width * 0.9
-                            height = width / img_ratio
-
-                        # 이미지 위치 계산 (중앙 정렬)
-                        left = (slide_width - width) / 2
-                        top = top_margin + (available_height - height) / 2
-
-                        print(
-                            f"Adding image at: left={left}, top={top}, width={width}, height={height}"
-                        )
-                        slide.shapes.add_picture(
-                            crop_image_path, left, top, width, height
-                        )
-                        print("Image added successfully")
-                except Exception as e:
-                    print(f"Error adding image: {str(e)}")
-                    import traceback
-
-                    print(traceback.format_exc())
-            else:
-                print(f"Image file does not exist: {crop_image_path}")
-        else:
-            print("No image path in header info")
-
-        # 출처 텍스트 추가
-        add_source_text(slide, header_info, prs, "교보마이플랜건강보험")
-
-        # AI 고지 문구 추가
+        add_layout_image(slide, prs)
+        add_muscle_image(slide, prs)
+        add_center_image(slide, header_info, prs)
+        add_source_text(slide, header_info, prs, pdf_name)
         add_ai_notice_text(slide, prs)
 
-    # PPT 저장
-    print(f"\nSaving PPT to: {output_path}")
-    try:
-        prs.save(output_path)
-        print("PPT saved successfully")
-    except Exception as e:
-        print(f"Error saving PPT: {str(e)}")
-        import traceback
-
-        print(traceback.format_exc())
-
+    prs.save(output_path)
+    print(f"PPT saved to: {output_path}")
     return output_path
 
 
@@ -676,7 +673,7 @@ with col_chat:
 
             st.session_state["selected_headers"] = selected_headers
             # 검색 시점에 PPT를 미리 생성하고 경로를 세션에 저장
-            pptx_path = os.path.join("temp_output", "search_results.pptx")
+            pptx_path = os.path.join("ppt_layout", "search_results.pptx")
 
             if selected_headers:
                 # selected_headers를 딕셔너리 형태로 변환
@@ -686,7 +683,10 @@ with col_chat:
                         selected_headers_dict[header["text"]] = header
 
                 if selected_headers_dict:
-                    create_ppt_from_header_dict(selected_headers_dict, pptx_path)
+                    pdf_name = get_uploaded_pdf_name(output_dir)
+                    create_ppt_from_header_dict(
+                        selected_headers_dict, pptx_path, pdf_name
+                    )
                     st.session_state["search_pptx_path"] = pptx_path
                 else:
                     st.session_state["search_pptx_path"] = None
@@ -714,8 +714,12 @@ with col_upload:
     uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type=["pdf"])
     if uploaded_file:
         st.info("파일이 업로드되었습니다. 아래 버튼을 눌러 파싱을 시작하세요.")
-        output_dir = "temp_output"
+        output_dir = "ppt_layout"
         os.makedirs(output_dir, exist_ok=True)
+
+        # PDF 파일 이름을 세션에 저장
+        st.session_state["pdf_path"] = uploaded_file.name
+
         md_save_path = os.path.join(
             output_dir, f"temp_{os.path.splitext(uploaded_file.name)[0]}.md"
         )
@@ -955,7 +959,8 @@ with col_upload:
             status_text.info("헤더 정보 처리중...")
 
             # 파싱이 끝난 직후 최신 header_dict로 PPT 생성
-            create_ppt_from_header_dict(header_dict, pptx_path)
+            pdf_name = get_uploaded_pdf_name(output_dir)
+            create_ppt_from_header_dict(header_dict, pptx_path, pdf_name)
             # header_dict를 표로 시각화
             df = pd.DataFrame(list(header_dict.values()))
             st.subheader("파싱된 주제별 정보 표")
