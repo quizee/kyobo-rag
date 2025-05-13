@@ -78,84 +78,6 @@ def is_useless_header(text):
     return False
 
 
-def extract_headers_from_upstage_elements(elements, page_number):
-    headers = []
-    prev_was_heading = False
-    consecutive_heading_count = 0  # 연속된 heading의 개수 추적
-    first_heading_found = False  # 페이지의 첫 번째 heading 추적
-    previous_levels = set()  # 이전에 나온 heading level들을 추적
-
-    for element in elements:
-        category = element.get("category", "")
-        if category.startswith("heading"):
-            content = element.get("content", {})
-            coordinates = element.get("coordinates", [])
-
-            text = content.get("markdown", "").strip()
-            if not text:
-                html_content = content.get("html", "")
-                text = re.sub(r"<[^>]+>", "", html_content).strip()
-
-            # 한글이 없는 헤더(숫자/영어/특수문자만)는 제외
-            if is_useless_header(text):
-                continue
-
-            y_coord = None
-            if coordinates and len(coordinates) >= 4:
-                top_y_coords = [coord["y"] for coord in coordinates[:2]]
-                y_coord = sum(top_y_coords) / len(top_y_coords)
-                bbox = {
-                    "top_left": coordinates[0],
-                    "top_right": coordinates[1],
-                    "bottom_right": coordinates[2],
-                    "bottom_left": coordinates[3],
-                }
-            else:
-                bbox = None
-
-            # heading level 결정 로직
-            if not first_heading_found:
-                # 페이지의 첫 번째 heading은 항상 level 1
-                final_level = 1
-                first_heading_found = True
-                consecutive_heading_count = 1
-            elif not prev_was_heading:
-                # 본문(heading이 아님) 이후의 heading level 결정
-                if 3 in previous_levels:
-                    final_level = 3
-                elif 2 in previous_levels:
-                    final_level = 2
-                else:
-                    final_level = 2
-                consecutive_heading_count = final_level
-            else:
-                # 이전 요소가 heading이었다면 level 증가
-                consecutive_heading_count += 1
-                final_level = min(consecutive_heading_count, 3)  # 최대 level 3
-
-            # 현재 level을 previous_levels에 추가
-            previous_levels.add(final_level)
-
-            # 마크다운 형식의 텍스트 생성
-            markdown_text = "#" * final_level + text
-
-            headers.append(
-                {
-                    "page": page_number,
-                    "level": final_level,
-                    "text": text,
-                    "markdown_text": markdown_text,
-                    "y": y_coord,
-                    "bbox": bbox,
-                    "page_number": page_number,
-                }
-            )
-            prev_was_heading = True
-        else:
-            prev_was_heading = False
-    return headers
-
-
 def build_header_dictionary(headers, _, output_dir="temp_output"):
     """
     headers: [{page, level, text, y, bbox}, ...]
@@ -288,15 +210,19 @@ def build_header_dictionary(headers, _, output_dir="temp_output"):
             # 바운딩 박스가 있는 경우, 좌우 여백을 바운딩 박스 기반으로 조정
             if header.get("bbox"):
                 bbox = header["bbox"]
-                # 좌우 좌표를 픽셀값으로 변환
-                left_x = bbox["top_left"]["x"] * img_width
-                right_x = bbox["top_right"]["x"] * img_width
-                # 바운딩 박스 너비의 5%를 여백으로 사용
-                margin_side = (right_x - left_x) * 0.05
+                try:
+                    # 좌우 좌표를 픽셀값으로 변환
+                    left_x = bbox["top_left"]["x"] * img_width
+                    right_x = bbox["top_right"]["x"] * img_width
+                    # 바운딩 박스 너비의 5%를 여백으로 사용
+                    margin_side = (right_x - left_x) * 0.05
+                except (KeyError, TypeError):
+                    # bbox 구조가 예상과 다르거나 None인 경우 기본 여백 사용
+                    margin_side = img_width * 0.05
 
             out_path = os.path.join(
                 output_dir,
-                f"page_{page_number}_level{header['level']}_header_{i+1}_{header['text'][:10]}.jpg",
+                f"page_{page_number}_level{header['level']}_header_{i+1}_{header['text'].replace('#', '').strip()}.jpg",
             )
 
             # 이미 크롭된 이미지가 있는지 확인
@@ -643,10 +569,17 @@ def create_ppt_from_header_dict(header_dict, output_path):
 
 
 def get_deepest_header_and_level(metadata):
-    for depth in reversed(range(1, 5)):  # Header4까지 확장 가능
+    """메타데이터에서 가장 깊은 레벨의 헤더를 찾되, 실제 헤더 레벨을 반환"""
+    # 먼저 Header 1부터 Header 3까지 확인
+    for depth in range(1, 4):  # 1부터 3까지 순차적으로 확인
         key = f"Header {depth}"
         if key in metadata and metadata[key]:
-            return metadata[key], depth
+            # 실제 헤더 레벨을 찾기 위해 header_dict 확인
+            header_text = metadata[key]
+            for h in st.session_state.get("header_dict", {}).values():
+                # 텍스트 비교 시 공백 제거하고 정규화
+                if h["text"].strip() == header_text.strip():
+                    return header_text, h["level"]  # 실제 헤더 레벨 반환
     return None, None
 
 
@@ -709,38 +642,11 @@ with col_chat:
             )
             results = retriever.invoke(user_input)
             st.subheader("검색 결과")
-            if isinstance(results, list):
-                for i, doc in enumerate(results):
-                    page = doc.metadata.get("page_number", "알 수 없음")
-                    st.markdown(f"**결과 {i+1} (페이지: {page})**")
-                    st.code(doc.page_content)
-                    # === 이미지 미리보기 추가 ===
-                    header_text, level = get_deepest_header_and_level(doc.metadata)
-                    matched_header = None
-                    for h in header_dict.values():
-                        if (
-                            h["page"] == page
-                            and h["level"] == level
-                            and h["text"] == header_text
-                        ):
-                            matched_header = h
-                            break
-                    if (
-                        matched_header
-                        and matched_header.get("crop_image_path")
-                        and os.path.exists(matched_header["crop_image_path"])
-                    ):
-                        st.image(
-                            matched_header["crop_image_path"],
-                            caption=f"이미지 ({header_text})",
-                            use_column_width=True,
-                        )
-            else:
-                doc = results
+            for i, doc in enumerate(results):
                 page = doc.metadata.get("page_number", "알 수 없음")
-                st.markdown(f"**결과 (페이지: {page})**")
+                st.markdown(f"**결과 {i+1} (페이지: {page})**")
                 st.code(doc.page_content)
-                st.json(doc.metadata)
+                # === 이미지 미리보기 추가 ===
                 header_text, level = get_deepest_header_and_level(doc.metadata)
                 matched_header = None
                 for h in header_dict.values():
@@ -758,43 +664,41 @@ with col_chat:
                 ):
                     st.image(
                         matched_header["crop_image_path"],
-                        caption=f"Crop 이미지 (헤더: {header_text})",
+                        caption=f"이미지 ({header_text})",
                         use_column_width=True,
                     )
+
             # === 검색 결과 PPT 다운로드 버튼 ===
             selected_headers = []
 
-            if isinstance(results, list):
-                for doc in results:
-                    page = doc.metadata.get("page_number")
-                    header_text, level = get_deepest_header_and_level(doc.metadata)
-                    for h in header_dict.values():
-                        if (
-                            h["page"] == page
-                            and h["level"] == level
-                            and h["text"] == header_text
-                        ):
-                            selected_headers.append(h)
-            else:
-                doc = results
+            for doc in results:
                 page = doc.metadata.get("page_number")
                 header_text, level = get_deepest_header_and_level(doc.metadata)
                 for h in header_dict.values():
                     if (
                         h["page"] == page
                         and h["level"] == level
-                        and h["text"] == header_text
+                        and h["text"].strip() == header_text.strip()
                     ):
                         selected_headers.append(h)
+                        break
+
             st.session_state["selected_headers"] = selected_headers
             # 검색 시점에 PPT를 미리 생성하고 경로를 세션에 저장
             pptx_path = os.path.join("temp_output", "search_results.pptx")
 
             if selected_headers:
-                create_ppt_from_header_dict(
-                    selected_headers, pptx_path, "교보마이플랜건강보험"
-                )
-                st.session_state["search_pptx_path"] = pptx_path
+                # selected_headers를 딕셔너리 형태로 변환
+                selected_headers_dict = {}
+                for header in selected_headers:
+                    if header.get("text") and header.get("crop_image_path"):
+                        selected_headers_dict[header["text"]] = header
+
+                if selected_headers_dict:
+                    create_ppt_from_header_dict(selected_headers_dict, pptx_path)
+                    st.session_state["search_pptx_path"] = pptx_path
+                else:
+                    st.session_state["search_pptx_path"] = None
             else:
                 st.session_state["search_pptx_path"] = None
 
@@ -860,6 +764,15 @@ with col_upload:
                         st.error(f"Markdown 파일을 찾을 수 없습니다: {e}")
             else:
                 if st.button("파싱 시작", type="primary"):
+                    # temp_output 디렉토리의 모든 파일 삭제
+                    for file in os.listdir(output_dir):
+                        file_path = os.path.join(output_dir, file)
+                        try:
+                            if os.path.isfile(file_path):
+                                os.remove(file_path)
+                        except Exception as e:
+                            print(f"Error deleting {file_path}: {e}")
+
                     st.session_state["parsing_in_progress"] = True
                     st.experimental_rerun()
         if st.session_state["parsing_in_progress"]:
@@ -874,16 +787,9 @@ with col_upload:
             status_text.info("문서 파싱 시작...")
 
             parser_obj = UpstageParser()
-            # 페이지 수 예측 (없으면 7로 가정)
-            total_pages = 7
             result = parser_obj.parse(temp_pdf_path)
-            md_docs = parser_obj.get_markdown_documents(result, split_by_page=True)
-            st.session_state["md_docs"] = md_docs
-            st.session_state["upstage_parse_result"] = result
-            progress_bar.progress(40, text="마크다운 문서 생성 완료!")
-            status_text.success("마크다운 문서 생성 완료!")
 
-            # elements를 페이지별로 그룹화
+            # 페이지별로 요소들을 그룹화
             pages = {}
             for element in result.get("elements", []):
                 page_num = element.get("page", 1)
@@ -891,28 +797,121 @@ with col_upload:
                     pages[page_num] = []
                 pages[page_num].append(element)
 
-            print(md_docs)
+            # 헤더 정보 추출 (Upstage coordinates 사용)
+            headers = []
 
-            # 마크다운 파일 저장
-            # if md_docs:
-            #     with open(md_save_path, "w", encoding="utf-8") as f:
-            #         # 각 페이지의 헤더들을 markdown_text로 변환하여 저장
-            #         for page_number, page_headers_list in pages.items():
-            #             if page_number <= 1:  # 1페이지는 건너뛰기
-            #                 continue
-            #             # y좌표 기준으로 정렬
-            #             sorted_headers = sorted(page_headers_list, key=lambda x: x["y"])
-            #             for header in sorted_headers:
-            #                 f.write(
-            #                     header.get(
-            #                         "markdown_text",
-            #                         f"{'#' * header['level']} {header['text']}",
-            #                     )
-            #                     + "\n\n"
-            #                 )
-            #             f.write("\n---\n\n")  # 페이지 구분선
-            #     st.session_state["md_save_path"] = md_save_path
-            #     st.info(f"마크다운 파일이 저장되었습니다: {md_save_path}")
+            # 각 페이지별로 처리
+            for page_num, page_elements in sorted(pages.items()):
+                prev_was_heading = False
+                consecutive_heading_count = 0  # 연속된 heading의 개수 추적
+                first_heading_found = False  # 페이지의 첫 번째 heading 추적
+                previous_levels = set()  # 이전에 나온 heading level들을 추적
+
+                for element in page_elements:
+                    if element.get("category", "").startswith("heading"):
+                        content = element.get("content", {})
+                        text = content.get("markdown", "").strip()
+                        text = re.sub(r"^#+\s*", "", text)
+
+                        # 한글이 없는 헤더(숫자/영어/특수문자만)는 제외
+                        if is_useless_header(text):
+                            continue
+
+                        # y 좌표 계산 (상단 두 좌표의 평균)
+                        coordinates = element.get("coordinates", [])
+                        y_coord = None
+                        if coordinates and len(coordinates) >= 4:
+                            top_y_coords = [coord["y"] for coord in coordinates[:2]]
+                            y_coord = sum(top_y_coords) / len(top_y_coords)
+
+                        # heading level 결정 로직
+                        if not first_heading_found:
+                            # 페이지의 첫 번째 heading은 항상 level 1
+                            final_level = 1
+                            first_heading_found = True
+                            consecutive_heading_count = 1
+                        elif not prev_was_heading:
+                            # 본문(heading이 아님) 이후의 heading level 결정
+                            if 3 in previous_levels:
+                                final_level = 3
+                            elif 2 in previous_levels:
+                                final_level = 2
+                            else:
+                                final_level = 2
+                            consecutive_heading_count = final_level
+                        else:
+                            # 이전 요소가 heading이었다면 level 증가
+                            consecutive_heading_count += 1
+                            final_level = min(
+                                consecutive_heading_count, 3
+                            )  # 최대 level 3
+
+                        # 현재 level을 previous_levels에 추가
+                        previous_levels.add(final_level)
+
+                        # 마크다운 형식의 텍스트 생성
+                        markdown_text = "#" * (final_level - 1) + " " + text
+
+                        headers.append(
+                            {
+                                "page": page_num,
+                                "level": final_level,
+                                "text": text,
+                                "markdown_text": markdown_text,
+                                "y": y_coord,
+                            }
+                        )
+                        prev_was_heading = True
+                    else:
+                        prev_was_heading = False
+
+            # 헤더 딕셔너리 생성
+            header_dict = build_header_dictionary(headers, {}, output_dir=output_dir)
+            st.session_state["header_dict"] = header_dict
+
+            # 마크다운 문서 생성
+            md_docs = []
+            current_doc = []
+
+            # 페이지별로 마크다운 문서 생성
+            for page_num, page_elements in sorted(pages.items()):
+                page_content = []
+                for element in page_elements:
+                    category = element.get("category", "")
+                    content = element.get("content", {})
+
+                    if category.startswith("heading"):
+                        # 헤더인 경우
+                        text = content.get("markdown", "").strip()
+                        # # 기호 제거
+                        text = re.sub(r"^#+\s*", "", text)
+
+                        # header_dict에서 해당 헤더의 실제 레벨 사용
+                        if text in header_dict:
+                            header_info = header_dict[text]
+                            level = header_info["level"]
+                            page_content.append(f"{'#' * (level - 1)}{text}")
+                    else:
+                        # 본문인 경우
+                        text = content.get("markdown", "").strip()
+                        if text:
+                            page_content.append(text)
+
+                # 페이지 내용을 하나의 문자열로 합치기
+                if page_content:
+                    md_docs.append("\n".join(page_content))
+
+            st.session_state["md_docs"] = md_docs
+            st.session_state["upstage_parse_result"] = result
+            progress_bar.progress(40, text="마크다운 문서 생성 완료!")
+            status_text.success("마크다운 문서 생성 완료!")
+
+            # md_docs를 파일로 저장
+            md_save_path = os.path.join(output_dir, "parsed_docs.md")
+            with open(md_save_path, "w", encoding="utf-8") as f:
+                for doc in md_docs:
+                    f.write(doc + "\n\n")
+            st.session_state["md_save_path"] = md_save_path
 
             progress_bar.progress(50, text="임베딩 및 벡터스토어 저장중...")
             status_text.info("임베딩 및 벡터스토어 저장중...")
@@ -942,27 +941,11 @@ with col_upload:
             progress_bar.progress(80, text="헤더 정보 처리중...")
             status_text.info("헤더 정보 처리중...")
 
-            # 헤더 정보 추출 (Upstage coordinates 사용)
-            headers = []
-            for page_idx, (page_number, page_elements) in enumerate(
-                sorted(pages.items())
-            ):
-                page_headers = extract_headers_from_upstage_elements(
-                    page_elements, page_number
-                )
-                headers.extend(page_headers)
-                percent = 80 + int(15 * (page_idx + 1) / len(pages))
-                progress_bar.progress(
-                    percent, text=f"헤더 정보 처리중... ({page_idx+1}/{len(pages)})"
-                )
-
-            header_dict = build_header_dictionary(headers, {}, output_dir=output_dir)
-            st.session_state["header_dict"] = header_dict
             # 파싱이 끝난 직후 최신 header_dict로 PPT 생성
             create_ppt_from_header_dict(header_dict, pptx_path)
             # header_dict를 표로 시각화
             df = pd.DataFrame(list(header_dict.values()))
-            st.subheader("파싱된 헤더/이미지 정보 표")
+            st.subheader("파싱된 주제별 정보 표")
             st.dataframe(df)
             progress_bar.progress(100, text="생성 완료!")
             status_text.success("모든 파일이 파싱된 PPT 생성 완료!")

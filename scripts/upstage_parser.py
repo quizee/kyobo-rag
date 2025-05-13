@@ -34,7 +34,6 @@ class UpstageParser:
                 "ocr": "force",
                 "output_formats": "['markdown']",
                 "coordinates": True,
-                "base64_encoding": "['table']",
             }
 
             response = requests.post(
