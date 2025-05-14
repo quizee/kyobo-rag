@@ -1011,3 +1011,27 @@ with col_upload:
                         )
                 except Exception as e:
                     st.error(f"Markdown 파일을 찾을 수 없습니다: {e}")
+
+st.markdown(
+    """
+    <style>
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background: white;
+        color: #888;
+        text-align: center;
+        font-size: 14px;
+        padding: 10px 0 8px 0;
+        z-index: 100;
+        border-top: 1px solid #eee;
+    }
+    </style>
+    <div class="footer">
+        Copyright 2025. 머슬싱크 Co. all rights reserved.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
